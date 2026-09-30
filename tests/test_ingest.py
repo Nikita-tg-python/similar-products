@@ -1,6 +1,7 @@
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 from fakeredis import FakeStrictRedis
 from rq import Queue
@@ -16,9 +17,15 @@ FIXTURE_PATH = ROOT / FIXTURE
 
 
 @pytest.fixture
-def captured(monkeypatch):
-    """Replace Postgres with a dict keyed by code — the same semantics as the upsert."""
-    store: dict[str, object] = {}
+def captured(monkeypatch, qdrant_store):
+    """Replace Postgres with dicts keyed by code (the same semantics as the upserts); Qdrant is the
+    in-memory one. Returns the products table; vectors land in `captured.vectors`."""
+
+    class Store(dict):
+        vectors: dict[str, object]
+
+    store = Store()
+    store.vectors = {}
 
     class FakeConn:
         def __enter__(self):
@@ -27,6 +34,15 @@ def captured(monkeypatch):
         def __exit__(self, *exc):
             return False
 
+    class FakePgvector:
+        name = "pgvector"
+
+        def __init__(self, _conn):
+            pass
+
+        def upsert(self, products, vectors):
+            store.vectors.update({p.code: v for p, v in zip(products, vectors, strict=True)})
+
     def upsert(_conn, products):
         products = list(products)
         store.update({p.code: p for p in products})
@@ -34,6 +50,9 @@ def captured(monkeypatch):
 
     monkeypatch.setattr(db, "connect", lambda _url: FakeConn())
     monkeypatch.setattr(db, "upsert_products", upsert)
+    monkeypatch.setattr(worker, "PgvectorStore", FakePgvector)
+    monkeypatch.setattr(worker, "get_qdrant_store", lambda: qdrant_store)
+    store.qdrant = qdrant_store
     return store
 
 
@@ -47,7 +66,14 @@ def test_batches_split_without_losing_rows():
 def test_bad_rows_do_not_fail_the_batch(captured):
     rows = [raw_row(), raw_row(code=""), raw_row(code="2", nova_group="three")]
     stats = worker.process_products(rows)
-    assert stats == {"received": 3, "upserted": 1, "skipped": 1, "invalid": 1}
+    assert {k: v for k, v in stats.items() if not k.endswith("_s")} == {
+        "received": 3,
+        "upserted": 1,
+        "embedded": 1,
+        "skipped": 1,
+        "invalid": 1,
+    }
+    assert {"encode_s", "pgvector_s", "qdrant_s"} <= set(stats)
     assert list(captured) == ["0000101209159"]
 
 
@@ -65,8 +91,14 @@ def test_queue_round_trip_is_idempotent(captured):
     assert totals["received"] == totals["upserted"] == len(rows)
     assert set(captured) == {r["code"] for r in rows}
 
+    # the same vectors went to both stores
+    assert captured.qdrant.count() == len(captured.vectors) == len(rows)
+    code = rows[0]["code"]
+    assert np.allclose(captured.qdrant.get_vector(code), captured.vectors[code])
+
     producer.enqueue_file(queue, FIXTURE_PATH, batch_size=100)
     assert len(captured) == len(rows)
+    assert captured.qdrant.count() == len(rows)
 
 
 def test_upsert_sql_updates_every_column_on_conflict():

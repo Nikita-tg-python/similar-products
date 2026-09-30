@@ -8,13 +8,17 @@ from fastapi.responses import JSONResponse
 
 from app import db, health
 from app.config import settings
+from app.vectorstores import get_qdrant_store
 
 logger = logging.getLogger(__name__)
 
 
 def _migrate() -> list[str]:
     with db.connect(settings.database_url) as conn:
-        return db.apply_migrations(conn)
+        applied = db.apply_migrations(conn)
+    if get_qdrant_store().ensure_collection():
+        logger.info("qdrant collection %r created", settings.qdrant_collection)
+    return applied
 
 
 @asynccontextmanager

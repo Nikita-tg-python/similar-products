@@ -1,9 +1,16 @@
-import uuid
+import os
 
-import psycopg
-import pytest
+# Before any app import: tests never load a real embedding model (offline, instant).
+os.environ["EMBEDDING_PROVIDER"] = "fake"
 
-from app.config import settings
+import uuid  # noqa: E402
+
+import psycopg  # noqa: E402
+import pytest  # noqa: E402
+from qdrant_client import QdrantClient  # noqa: E402
+
+from app.config import settings  # noqa: E402
+from app.vectorstores.qdrant_store import QdrantStore  # noqa: E402
 
 
 @pytest.fixture
@@ -22,3 +29,11 @@ def pg_schema():
     finally:
         conn.execute(f"DROP SCHEMA {schema} CASCADE")
         conn.close()
+
+
+@pytest.fixture
+def qdrant_store():
+    """Qdrant's local in-memory mode: the real client and filter semantics, no server."""
+    store = QdrantStore(QdrantClient(":memory:"), "products_test")
+    store.ensure_collection()
+    return store

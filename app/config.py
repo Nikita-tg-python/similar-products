@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
     qdrant_url: str = "http://localhost:6333"
     redis_url: str = "redis://localhost:6379/0"
+    qdrant_collection: str = "products"
+    embedding_provider: str = "sentence-transformers"  # sentence-transformers | fake
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     llm_provider: str = "gemini"  # gemini | groq | fake
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash-lite"

@@ -23,7 +23,9 @@ UPSERT_PRODUCT_SQL = (
 
 
 def connect(database_url: str) -> psycopg.Connection:
-    return psycopg.connect(database_url, connect_timeout=5)
+    # lock_timeout: a job blocked by someone else's row locks fails (and RQ retries it) instead of
+    # hanging; seen when a killed worker left an open transaction behind (KAN-58).
+    return psycopg.connect(database_url, connect_timeout=5, options="-c lock_timeout=60s")
 
 
 def apply_migrations(conn: psycopg.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> list[str]:

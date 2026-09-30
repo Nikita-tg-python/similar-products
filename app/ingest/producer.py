@@ -24,6 +24,7 @@ from app import db
 from app.config import settings
 from app.ingest.source import iter_local_rows
 from app.ingest.worker import QUEUE_NAME, process_products
+from app.vectorstores import get_qdrant_store
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +102,12 @@ def main() -> None:
     if not args.source.exists():
         sys.exit(f"{args.source} not found: run `make sample` first")
 
-    # The schema must exist before the first job lands, whichever of API/producer starts first.
+    # Schema and collection must exist before the first job lands, whichever of API/producer starts
+    # first.
     with db.connect(settings.database_url) as conn:
         logger.info("migrations applied: %s", db.apply_migrations(conn))
+    if get_qdrant_store().ensure_collection():
+        logger.info("qdrant collection %r created", settings.qdrant_collection)
 
     redis = Redis.from_url(settings.redis_url)
     queue = Queue(QUEUE_NAME, connection=redis)

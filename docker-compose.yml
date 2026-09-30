@@ -3,6 +3,16 @@ name: similar-products
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    # Drop connections of clients that vanished (a killed container) after ~90 s instead of the
+    # kernel's 2 h: otherwise their open transactions keep row locks and block the next jobs.
+    command:
+      - postgres
+      - -c
+      - tcp_keepalives_idle=60
+      - -c
+      - tcp_keepalives_interval=10
+      - -c
+      - tcp_keepalives_count=3
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-products}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-products}
@@ -51,6 +61,8 @@ services:
       POSTGRES_PORT: 5432
       QDRANT_URL: http://qdrant:6333
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - hf_cache:/root/.cache/huggingface
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,7 +75,14 @@ services:
 
   worker:
     build: .
-    command: ["rq", "worker", "ingest", "--url", "redis://redis:6379/0", "--with-scheduler"]
+    # SimpleWorker: jobs run in the worker process, so the embedding model loads once per worker
+    command:
+      - rq
+      - worker
+      - ingest
+      - --url=redis://redis:6379/0
+      - --with-scheduler
+      - --worker-class=rq.worker.SimpleWorker
     env_file:
       - path: .env
         required: false
@@ -72,14 +91,24 @@ services:
       POSTGRES_PORT: 5432
       QDRANT_URL: http://qdrant:6333
       REDIS_URL: redis://redis:6379/0
+      # 2 replicas share the CPUs instead of each spinning up a thread per core
+      OMP_NUM_THREADS: 4
+    volumes:
+      - hf_cache:/root/.cache/huggingface
     depends_on:
       postgres:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
       redis:
         condition: service_healthy
+    # Warm shutdown finishes the current batch (~20-35 s) instead of being killed after 10 s.
+    stop_grace_period: 2m
     deploy:
       replicas: 2
 
 volumes:
   pgdata:
   qdrant:
+  # the embedding model, downloaded once on first use
+  hf_cache:

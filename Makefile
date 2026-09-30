@@ -2,7 +2,7 @@
 DC  = docker compose
 RUN = $(DC) run --rm --no-deps -v "$(CURDIR)":/app api
 
-.PHONY: up down build logs test lint sample fixture ingest
+.PHONY: up down build logs test lint sample fixture ingest check-stores
 
 up:
 	$(DC) up -d --build
@@ -30,3 +30,6 @@ fixture:  ## tests/fixtures/sample_products.parquet from the local sample (every
 
 ingest:  ## data/sample_50k.parquet -> RQ queue -> workers -> Postgres; waits and reports (needs `make up`)
 	$(RUN) python -m app.ingest.producer $(ARGS)
+
+check-stores:  ## Qdrant vs pgvector: same counts, same vectors, top-10 neighbour overlap
+	$(RUN) python -m scripts.check_stores $(ARGS)

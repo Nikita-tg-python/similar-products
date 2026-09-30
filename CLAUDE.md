@@ -50,7 +50,10 @@ POST текстовий запит  → LLM (1 виклик) → фільтри 
 - `make test` — pytest без мережі й ключів; `make lint` — ruff
 - `make sample` — ≥50k корисних рядків з HF → `data/sample_50k.parquet` (~130 МБ трафіку, ~1.5 хв);
   `make fixture` — `tests/fixtures/sample_products.parquet` з вибірки (тести перевіряють покриття `CASES`)
-- `make ingest` — вибірка → RQ `ingest` (батчі по 500) → `worker` × 2 → upsert у `products` (ідемпотентно)
+- `make ingest` — вибірка → RQ `ingest` (батчі по 500) → `worker` × 2 → upsert у `products`, ембединги →
+  pgvector і Qdrant паралельно (ідемпотентно, ~20 хв на 50k: CPU-кодування в Docker)
+- `make check-stores` — лічильники обох баз, розбіжність векторів, перетин топ-10 сусідів
+- Тести: `EMBEDDING_PROVIDER=fake` примусово (`tests/conftest.py`), Qdrant — `QdrantClient(":memory:")`
 - Інтеграційні тести з Postgres працюють у тимчасовій схемі (`tests/conftest.py: pg_schema`) і
   пропускаються, якщо БД не піднята
 - Нова міграція — новий файл `migrations/NNN_*.sql`, ідемпотентний (`IF NOT EXISTS`); застосовані не правити.
