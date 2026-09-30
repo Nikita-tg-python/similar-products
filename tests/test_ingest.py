@@ -2,7 +2,6 @@ import math
 from pathlib import Path
 
 import numpy as np
-import pytest
 from fakeredis import FakeStrictRedis
 from rq import Queue
 
@@ -14,46 +13,6 @@ from tests.test_source import raw_row
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_PATH = ROOT / FIXTURE
-
-
-@pytest.fixture
-def captured(monkeypatch, qdrant_store):
-    """Replace Postgres with dicts keyed by code (the same semantics as the upserts); Qdrant is the
-    in-memory one. Returns the products table; vectors land in `captured.vectors`."""
-
-    class Store(dict):
-        vectors: dict[str, object]
-
-    store = Store()
-    store.vectors = {}
-
-    class FakeConn:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    class FakePgvector:
-        name = "pgvector"
-
-        def __init__(self, _conn):
-            pass
-
-        def upsert(self, products, vectors):
-            store.vectors.update({p.code: v for p, v in zip(products, vectors, strict=True)})
-
-    def upsert(_conn, products):
-        products = list(products)
-        store.update({p.code: p for p in products})
-        return len(products)
-
-    monkeypatch.setattr(db, "connect", lambda _url: FakeConn())
-    monkeypatch.setattr(db, "upsert_products", upsert)
-    monkeypatch.setattr(worker, "PgvectorStore", FakePgvector)
-    monkeypatch.setattr(worker, "get_qdrant_store", lambda: qdrant_store)
-    store.qdrant = qdrant_store
-    return store
 
 
 def test_batches_split_without_losing_rows():

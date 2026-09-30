@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from psycopg_pool import ConnectionPool
 
-from app import db, health
+from app import db, health, telemetry
 from app.api import search
 from app.config import settings
 from app.embeddings import get_embedder
@@ -42,7 +43,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await asyncio.to_thread(app.state.pool.close)
 
 
-app = FastAPI(title="Similar Products", version="0.1.0", lifespan=lifespan)
+telemetry.configure("similar-products-api")
+app = FastAPI(
+    title="Similar Products",
+    version="0.1.0",
+    lifespan=lifespan,
+    # FastAPI's own OpenTelemetry support is off: tracing goes through app/telemetry.py and the
+    # instrumentor below. Left on, it adds an OTLP exporter whenever OTEL_EXPORTER_OTLP_ENDPOINT
+    # is set, even with TRACING_EXPORTER=tree (seen in KAN-62: warnings about an absent Jaeger).
+    telemetry={"tracing": False, "metrics": False, "logs": False, "auto_configure": False},
+)
+# One server span per request; no per-chunk receive/send spans, no /health noise.
+FastAPIInstrumentor.instrument_app(app, excluded_urls="health", exclude_spans=["receive", "send"])
 register_error_handlers(app)
 app.include_router(search.router)
 

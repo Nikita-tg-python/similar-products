@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     qdrant_grpc_port: int = 6334
     embedding_provider: str = "sentence-transformers"  # sentence-transformers | fake
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    tracing_exporter: str = "tree"  # tree | console | otlp | memory | none (app/telemetry.py)
     llm_provider: str = "gemini"  # gemini | groq | fake
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash-lite"

@@ -14,10 +14,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app import db
+from app import db, telemetry
 from app.config import settings
 from app.embeddings import embedding_text, get_embedder
 from app.ingest.source import Product, normalize
+from app.telemetry import in_current_context, span
 from app.vectorstores import get_qdrant_store
 from app.vectorstores.pgvector_store import PgvectorStore
 
@@ -46,25 +47,43 @@ def normalize_batch(rows: list[dict[str, Any]]) -> tuple[list[Product], int, int
     return products, skipped, invalid
 
 
-def _timed(fn, *args) -> float:
-    started = time.monotonic()
-    fn(*args)
-    return time.monotonic() - started
+def _write(store, products: list[Product], vectors) -> float:
+    with span(f"write_{store.name}", rows=len(products)):
+        started = time.monotonic()
+        store.upsert(products, vectors)
+        return time.monotonic() - started
 
 
 def process_products(rows: list[dict[str, Any]]) -> dict[str, int]:
     """The RQ job. Any store error raises, so RQ retries the whole batch: every write is an
     idempotent upsert, and a retry rewrites both stores, so they cannot drift apart for good."""
-    products, skipped, invalid = normalize_batch(rows)
+    telemetry.configure("similar-products-worker")  # once per worker process
+    with span("ingest_batch", rows=len(rows)) as batch_span:
+        stats = _process(rows)
+        for key, value in stats.items():
+            batch_span.set_attribute(key, value)
+    return stats
+
+
+def _process(rows: list[dict[str, Any]]) -> dict[str, int]:
+    with span("normalize"):
+        products, skipped, invalid = normalize_batch(rows)
+    with span("load_embedder"):  # the model loads on the worker's first job, then ~0 ms
+        embedder = get_embedder()
     started = time.monotonic()
-    vectors = get_embedder().encode([embedding_text(p) for p in products])
+    with span("embed", texts=len(products)):
+        vectors = embedder.encode([embedding_text(p) for p in products])
     seconds = {"encode_s": time.monotonic() - started}
     with db.connect(settings.database_url) as conn:
-        upserted = db.upsert_products(conn, products)
+        with span("upsert_products"):
+            upserted = db.upsert_products(conn, products)
         stores = (PgvectorStore(conn), get_qdrant_store())
         # Same vectors into both stores at once; .result() re-raises either store's error.
         with ThreadPoolExecutor(max_workers=len(stores)) as pool:
-            futures = {s.name: pool.submit(_timed, s.upsert, products, vectors) for s in stores}
+            futures = {
+                s.name: pool.submit(in_current_context(_write), s, products, vectors)
+                for s in stores
+            }
             seconds |= {f"{name}_s": future.result() for name, future in futures.items()}
     stats = {
         "received": len(rows),

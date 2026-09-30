@@ -3,6 +3,7 @@ import os
 # Before any app import: tests never load a real embedding model or call a real LLM.
 os.environ["EMBEDDING_PROVIDER"] = "fake"
 os.environ["LLM_PROVIDER"] = "fake"
+os.environ["TRACING_EXPORTER"] = "memory"
 
 import uuid  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -14,6 +15,7 @@ from qdrant_client import QdrantClient  # noqa: E402
 from app import db  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.embeddings import FakeEmbedder, embedding_text  # noqa: E402
+from app.ingest import worker  # noqa: E402
 from app.ingest.source import iter_local_rows, normalize  # noqa: E402
 from app.vectorstores.pgvector_store import PgvectorStore  # noqa: E402
 from app.vectorstores.qdrant_store import QdrantStore  # noqa: E402
@@ -63,3 +65,43 @@ def pgvector_store(pg_schema, products):
     db.apply_migrations(pg_schema)
     db.upsert_products(pg_schema, products)
     return PgvectorStore(pg_schema)
+
+
+@pytest.fixture
+def captured(monkeypatch, qdrant_store):
+    """Replace Postgres with dicts keyed by code (the same semantics as the upserts); Qdrant is the
+    in-memory one. Returns the products table; vectors land in `captured.vectors`."""
+
+    class Store(dict):
+        vectors: dict[str, object]
+
+    store = Store()
+    store.vectors = {}
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class FakePgvector:
+        name = "pgvector"
+
+        def __init__(self, _conn):
+            pass
+
+        def upsert(self, products, vectors):
+            store.vectors.update({p.code: v for p, v in zip(products, vectors, strict=True)})
+
+    def upsert(_conn, products):
+        products = list(products)
+        store.update({p.code: p for p in products})
+        return len(products)
+
+    monkeypatch.setattr(db, "connect", lambda _url: FakeConn())
+    monkeypatch.setattr(db, "upsert_products", upsert)
+    monkeypatch.setattr(worker, "PgvectorStore", FakePgvector)
+    monkeypatch.setattr(worker, "get_qdrant_store", lambda: qdrant_store)
+    store.qdrant = qdrant_store
+    return store

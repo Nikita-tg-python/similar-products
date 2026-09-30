@@ -7,10 +7,12 @@ match: the vector search and the database filters do, deterministically (app/api
 import logging
 import re
 
+from opentelemetry import trace
 from pydantic import ValidationError
 
 from app.llm.base import LLMClient, LLMError, Message
 from app.schemas import ALLERGEN_ALIASES, ALLERGENS, ParsedQuery
+from app.telemetry import span
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,15 @@ def _validate(raw: str) -> ParsedQuery:
 
 
 async def parse_query(llm: LLMClient, query: str) -> ParsedQuery:
+    with span("llm_parse", **{"llm.provider": llm.provider, "query.chars": len(query)}) as s:
+        parsed = await _parse(llm, query, s)
+        s.set_attribute("parsed.semantic_text", parsed.semantic_text)
+        return parsed
+
+
+async def _parse(llm: LLMClient, query: str, s: trace.Span) -> ParsedQuery:
     messages = [Message("system", SYSTEM_PROMPT), Message("user", query)]
+    s.set_attribute("llm.attempts", 1)
     raw = await llm.complete(messages, json_output=True)
     try:
         return _validate(raw)
@@ -69,6 +79,7 @@ async def parse_query(llm: LLMClient, query: str) -> ParsedQuery:
                 "Return only the corrected JSON object.",
             ),
         ]
+    s.set_attribute("llm.attempts", 2)
     raw = await llm.complete(messages, json_output=True)
     try:
         return _validate(raw)

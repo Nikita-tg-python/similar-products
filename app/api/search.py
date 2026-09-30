@@ -30,6 +30,7 @@ from app.schemas import (
     SimilarProduct,
     SimilarResponse,
 )
+from app.telemetry import span
 from app.vectorstores import get_qdrant_store
 from app.vectorstores.base import VectorStore
 from app.vectorstores.pgvector_store import PgvectorStore
@@ -85,7 +86,8 @@ def similar_products(
     if product is None:
         raise ApiError(404, "product_not_found", f"no product with code {code!r}")
     store: VectorStore = PgvectorStore(conn) if backend == "pgvector" else qdrant
-    vector = store.get_vector(code)
+    with span("get_vector", backend=backend, code=code):
+        vector = store.get_vector(code)
     if vector is None:
         raise ApiError(409, "not_indexed", f"product {code!r} has no vector in {backend} yet")
 
@@ -108,7 +110,8 @@ async def search_text(
 ) -> SearchResponse:
     parsed = await parse_query(llm, body.query)  # the only LLM call
     filters, notes = parsed.to_filters()
-    vector = (await run_in_threadpool(get_embedder().encode, [parsed.semantic_text]))[0]
+    with span("embed_query", text=parsed.semantic_text):
+        vector = (await run_in_threadpool(get_embedder().encode, [parsed.semantic_text]))[0]
     store: VectorStore = PgvectorStore(conn) if body.backend == "pgvector" else qdrant
     results, took_ms = await run_in_threadpool(run_search, conn, store, vector, filters, body.limit)
     return SearchResponse(
@@ -132,10 +135,14 @@ def run_search(
 ) -> tuple[list[SimilarProduct], float]:
     """Vector search with in-store filters; product details always come from Postgres, whichever
     store ranked them. Returns (results, milliseconds spent in the vector search)."""
-    started = time.perf_counter()
-    hits = store.search(vector, limit=limit, exclude_code=exclude_code, filters=filters)
-    took_ms = round((time.perf_counter() - started) * 1000, 2)
-    details = db.fetch_products(conn, [h.code for h in hits])
+    active = filters.model_dump_json(exclude_defaults=True)
+    with span("vector_search", backend=store.name, limit=limit, filters=active) as s:
+        started = time.perf_counter()
+        hits = store.search(vector, limit=limit, exclude_code=exclude_code, filters=filters)
+        took_ms = round((time.perf_counter() - started) * 1000, 2)
+        s.set_attribute("hits", len(hits))
+    with span("fetch_products", rows=len(hits)):
+        details = db.fetch_products(conn, [h.code for h in hits])
     results = [
         SimilarProduct(**details[h.code].model_dump(), score=round(h.score, 4))
         for h in hits

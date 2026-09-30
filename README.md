@@ -192,7 +192,42 @@ filters: {"exclude_allergens": ["en:nuts", "en:peanuts"], "vegan_only": true, "s
 
 ## Трейсинг
 
-> KAN-62: OpenTelemetry, консольний експортер за замовчуванням, опційно OTLP → Jaeger.
+OpenTelemetry ([app/telemetry.py](app/telemetry.py)) у API (`FastAPIInstrumentor`: серверний спан на
+кожен запит, крім `/health`) і у воркері. Кастомні спани:
+
+| Де | Спани |
+| --- | --- |
+| `POST /search` | `llm_parse` (провайдер, спроби, `semantic_text`) → `embed_query` → `vector_search` (backend, фільтри, hits) → `fetch_products` |
+| `GET /products/{code}/similar` | `get_vector` → `vector_search` → `fetch_products` |
+| воркер, `ingest_batch` | `normalize` → `load_embedder` → `embed` → `upsert_products` → `write_pgvector` ‖ `write_qdrant` (паралельно) |
+
+**За замовчуванням — консоль** (`TRACING_EXPORTER=tree`): коли запит чи джоб завершується, його дерево
+спанів друкується в лог, один рядок на спан:
+
+```bash
+docker compose logs -f api      # або worker
+```
+```
+── trace 760808583d538018f3b8e85507ce4202 ──────────────────────────────
+POST /search                                1244.9 ms
+  llm_parse                                  813.7 ms  llm.provider=gemini query.chars=52 llm.attempts=1 parsed.semantic_text=cookie biscuit
+  embed_query                                414.9 ms  text=cookie biscuit
+  vector_search                               11.3 ms  backend=qdrant limit=5 filters={"exclude_allergens":["en:nuts","en:peanuts"],"vegan_only":true,"sugars_max":5.0} hits=5
+  fetch_products                               2.2 ms  rows=5
+```
+
+Інші значення `TRACING_EXPORTER`: `console` (сирий JSON на кожен спан від `ConsoleSpanExporter`),
+`none` (трейсинг вимкнено).
+
+**Jaeger (опційно):**
+
+```bash
+TRACING_EXPORTER=otlp docker compose --profile observability up -d   # або TRACING_EXPORTER=otlp у .env
+open http://localhost:16686                                           # сервіси similar-products-api / -worker
+```
+
+API і воркер шлють спани по OTLP/HTTP на `jaeger:4318`. Повернутися до консолі: `docker compose up -d`
+без змінної, а Jaeger зупиняється командою `docker compose --profile observability stop jaeger`.
 
 ## Тести
 
@@ -284,6 +319,9 @@ tests/          офлайн-тести
   виправляється.
 - **Qdrant через gRPC** (`QDRANT_PREFER_GRPC=true`, порт 6334). REST-клієнт додавав ~40 мс на
   кожен пошук (eval/comparison_report.md). [app/vectorstores/__init__.py](app/vectorstores/__init__.py)
+- **Власна телеметрія FastAPI вимкнена** (`telemetry={...: False}`). FastAPI 0.142 сам додає
+  OTLP-експортер, щойно бачить `OTEL_EXPORTER_OTLP_ENDPOINT`, навіть коли `TRACING_EXPORTER=tree`.
+  Трейсинг іде лише через [app/telemetry.py](app/telemetry.py) та `opentelemetry-instrumentation-fastapi`.
 - **Однаковий `ef` пошуку в обох базах** — `SEARCH_EF = 100` (pgvector `hnsw.ef_search`, Qdrant
   `hnsw_ef`). [app/vectorstores/base.py](app/vectorstores/base.py)
 - **Орієнтири для цукру у fixture:** «низький» ≤ 5 г/100 г (claim ЄС, Reg. (EC) 1924/2006), «високий»
