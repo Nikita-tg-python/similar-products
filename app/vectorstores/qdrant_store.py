@@ -7,7 +7,8 @@ from qdrant_client import QdrantClient, models
 
 from app.embeddings import EMBEDDING_DIM
 from app.ingest.source import Product
-from app.vectorstores.base import Hit, payload
+from app.schemas import SearchFilters
+from app.vectorstores.base import SEARCH_EF, Hit, payload
 
 # Qdrant ids are unsigned ints or UUIDs. Barcodes are neither (leading zeros, the odd letter), so
 # the id is a UUIDv5 of the code: stable across runs, which keeps upserts idempotent.
@@ -71,20 +72,43 @@ class QdrantStore:
         return np.asarray(points[0].vector, dtype=np.float32) if points else None
 
     def search(
-        self, vector: np.ndarray, limit: int = 10, exclude_code: str | None = None
+        self,
+        vector: np.ndarray,
+        limit: int = 10,
+        exclude_code: str | None = None,
+        filters: SearchFilters | None = None,
     ) -> list[Hit]:
-        query_filter = None
-        if exclude_code is not None:
-            query_filter = models.Filter(
-                must_not=[
-                    models.FieldCondition(key="code", match=models.MatchValue(value=exclude_code))
-                ]
-            )
         response = self.client.query_points(
             self.collection,
             query=vector.tolist(),
-            query_filter=query_filter,
+            query_filter=qdrant_filter(filters or SearchFilters(), exclude_code),
+            search_params=models.SearchParams(hnsw_ef=SEARCH_EF),
             limit=limit,
             with_payload=["code"],
         )
         return [Hit(code=p.payload["code"], score=p.score) for p in response.points]
+
+
+def qdrant_filter(filters: SearchFilters, exclude_code: str | None) -> models.Filter | None:
+    must: list[models.Condition] = []
+    must_not: list[models.Condition] = []
+    if exclude_code is not None:
+        must_not.append(
+            models.FieldCondition(key="code", match=models.MatchValue(value=exclude_code))
+        )
+    if filters.exclude_allergens:
+        # MatchAny on an array payload: true if any element is in the list
+        banned = models.MatchAny(any=filters.exclude_allergens)
+        must_not += [
+            models.FieldCondition(key="allergens_tags", match=banned),
+            models.FieldCondition(key="traces_tags", match=banned),
+        ]
+    if filters.vegan_only:
+        must.append(models.FieldCondition(key="vegan", match=models.MatchValue(value="yes")))
+    if (grades := filters.nutriscore_grades) is not None:
+        must.append(
+            models.FieldCondition(key="nutriscore_grade", match=models.MatchAny(any=grades))
+        )
+    if not (must or must_not):
+        return None
+    return models.Filter(must=must or None, must_not=must_not or None)

@@ -4,8 +4,10 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import psycopg
+from psycopg.rows import class_row
 
 from app.ingest.source import Product
+from app.schemas import ProductOut
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 # Arbitrary constant: serialises migrations when the API and the producer start at once.
@@ -22,10 +24,13 @@ UPSERT_PRODUCT_SQL = (
 )
 
 
+# lock_timeout: a job blocked by someone else's row locks fails (and RQ retries it) instead of
+# hanging; seen when a killed worker left an open transaction behind (KAN-58).
+CONNECT_KWARGS = {"connect_timeout": 5, "options": "-c lock_timeout=60s"}
+
+
 def connect(database_url: str) -> psycopg.Connection:
-    # lock_timeout: a job blocked by someone else's row locks fails (and RQ retries it) instead of
-    # hanging; seen when a killed worker left an open transaction behind (KAN-58).
-    return psycopg.connect(database_url, connect_timeout=5, options="-c lock_timeout=60s")
+    return psycopg.connect(database_url, **CONNECT_KWARGS)
 
 
 def apply_migrations(conn: psycopg.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> list[str]:
@@ -47,3 +52,11 @@ def upsert_products(conn: psycopg.Connection, products: Iterable[Product]) -> in
         with conn.transaction(), conn.cursor() as cur:
             cur.executemany(UPSERT_PRODUCT_SQL, params)
     return len(params)
+
+
+PRODUCT_OUT_SQL = f"SELECT {', '.join(ProductOut.model_fields)} FROM products WHERE code = ANY(%s)"
+
+
+def fetch_products(conn: psycopg.Connection, codes: list[str]) -> dict[str, ProductOut]:
+    with conn.cursor(row_factory=class_row(ProductOut)) as cur:
+        return {p.code: p for p in cur.execute(PRODUCT_OUT_SQL, (codes,))}

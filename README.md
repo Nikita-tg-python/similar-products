@@ -93,8 +93,34 @@ vegan yes/no/maybe/unknown, Nutri-Score a–e і невідомий, цукор 
 
 ## Приклади запитів
 
-> KAN-59/KAN-60: пошук за кодом продукту, текстовий запит (у т.ч. «веганське печиво без горіхів з
-> низьким вмістом цукру»).
+### Схожі за кодом продукту
+
+```bash
+# 3700036906990 — «Pâte à tartiner 20% de noisettes»
+curl "localhost:8000/products/3700036906990/similar?limit=5"                           # backend=qdrant за замовчуванням
+curl "localhost:8000/products/3700036906990/similar?backend=pgvector&exclude_allergens=nuts"
+curl "localhost:8000/products/3700036906990/similar?exclude_allergens=nuts,milk&vegan_only=true&nutriscore_max=c"
+```
+
+Параметри:
+- `backend=qdrant|pgvector`;
+- `limit` від 1 до 100;
+- `exclude_allergens` повторюється або йде через кому. Приймає 14 алергенів ЄС і синоніми (`soy`,
+  `peanut`, `dairy`, `sesame`…). Відкидає продукт, якщо алерген є в `allergens_tags` **або**
+  `traces_tags`;
+- `vegan_only`;
+- `nutriscore_max`: найгірша допустима оцінка.
+
+Фільтри застосовуються всередині бази: WHERE з iterative HNSW scan у pgvector, payload-filter у Qdrant.
+
+Відповідь містить `product`, `backend`, `filters_applied` (нормалізовані: `["en:nuts"]`), `took_ms`
+(лише векторний пошук) і `results` зі `score` та полями-фільтрами. Помилки мають одну форму
+`{"error": {"code", "message", "details"?}}`: 404 `product_not_found`, 409 `not_indexed`,
+422 `invalid_request`.
+
+### Текстовий запит
+
+> KAN-60: «веганське печиво без горіхів з низьким вмістом цукру».
 
 ## Порівняння Qdrant vs pgvector
 
@@ -121,7 +147,8 @@ make lint
 ```
 app/            FastAPI (main.py, config.py, health.py), db.py (міграції, upsert)
 migrations/     SQL-схема, ідемпотентна, застосовується на старті
-app/api/        роутери пошуку
+app/api/        роутери пошуку (search.py: GET /products/{code}/similar)
+app/schemas.py  фільтри пошуку й форми відповідей; app/errors.py — формат помилок
 app/ingest/     стрім HF, черга Redis/RQ, воркери
 app/vectorstores/  Qdrant і pgvector за спільним інтерфейсом
 app/llm/        LLMClient і провайдери (gemini | groq | fake)
@@ -176,6 +203,16 @@ tests/          офлайн-тести
   переживає fork. Модель завантажується з HF при першому запуску в volume `hf_cache`.
 - **Обидві бази пишуться в одному джобі.** Якщо запис в одну з них падає, падає весь батч, і RQ його
   повторює. Усі записи — upsert, тож бази не розходяться назавжди.
+- **Невідоме не проходить фільтр:** `vegan_only` пропускає лише `yes` (не `maybe` і не `unknown`),
+  `nutriscore_max` відкидає продукти без оцінки. [app/schemas.py](app/schemas.py)
+- **Горіхи = `en:nuts` (деревні), арахіс окремо (`en:peanuts`)**, як у регламенті ЄС 1169/2011.
+  «Без горіхів» з арахісом — це `exclude_allergens=nuts,peanuts`. [app/schemas.py](app/schemas.py)
+- **Фільтр алергенів довіряє тегам OFF, а вони неповні.** Із 2910 продуктів вибірки, у назві чи складі
+  яких згадано фундук, мигдаль, волоський горіх, кеш'ю тощо, у 729 (25 %) немає `en:nuts` ні в
+  алергенах, ні в слідах. `exclude_allergens=nuts` їх не відкидає (приклад: «Pâte à tartiner
+  noisettes et cacao»). Це обмеження даних, а не фільтра.
+- **Однаковий `ef` пошуку в обох базах** — `SEARCH_EF = 100` (pgvector `hnsw.ef_search`, Qdrant
+  `hnsw_ef`). [app/vectorstores/base.py](app/vectorstores/base.py)
 - **Орієнтири для цукру у fixture:** «низький» ≤ 5 г/100 г (claim ЄС, Reg. (EC) 1924/2006), «високий»
   > 22.5 г/100 г (UK FSA). У вибірці 50k лише 3 веганських печива без горіхів з цукром ≤ 5 г, і 54 веганських
   печива загалом. Остаточний поріг «низький цукор» для пошуку фіксується в KAN-59/KAN-60.

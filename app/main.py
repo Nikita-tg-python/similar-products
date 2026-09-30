@@ -5,9 +5,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from psycopg_pool import ConnectionPool
 
 from app import db, health
+from app.api import search
 from app.config import settings
+from app.errors import register_error_handlers
 from app.vectorstores import get_qdrant_store
 
 logger = logging.getLogger(__name__)
@@ -25,10 +28,18 @@ def _migrate() -> list[str]:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logging.basicConfig(level=logging.INFO)
     logger.info("migrations applied: %s", await asyncio.to_thread(_migrate))
+    # Sync pool: search endpoints are plain `def`, run by FastAPI in its thread pool.
+    app.state.pool = ConnectionPool(
+        settings.database_url, kwargs=db.CONNECT_KWARGS, min_size=1, max_size=10, open=False
+    )
+    await asyncio.to_thread(app.state.pool.open, wait=True)
     yield
+    await asyncio.to_thread(app.state.pool.close)
 
 
 app = FastAPI(title="Similar Products", version="0.1.0", lifespan=lifespan)
+register_error_handlers(app)
+app.include_router(search.router)
 
 
 @app.get("/health")

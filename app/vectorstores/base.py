@@ -6,6 +6,7 @@ from typing import Protocol
 import numpy as np
 
 from app.ingest.source import Product
+from app.schemas import SearchFilters
 
 # Filter fields copied next to each vector (Qdrant payload; in Postgres they are the row's columns).
 PAYLOAD_FIELDS = (
@@ -17,6 +18,11 @@ PAYLOAD_FIELDS = (
     "sugars_100g",
     "categories_tags",
 )
+
+
+# HNSW candidate list at query time, the same in both stores (pgvector hnsw.ef_search, Qdrant
+# hnsw_ef): with filters the graph walk needs headroom beyond pgvector's default 40.
+SEARCH_EF = 100
 
 
 @dataclass(frozen=True)
@@ -43,5 +49,12 @@ class VectorStore(Protocol):
     def get_vector(self, code: str) -> np.ndarray | None: ...
 
     def search(
-        self, vector: np.ndarray, limit: int = 10, exclude_code: str | None = None
-    ) -> list[Hit]: ...
+        self,
+        vector: np.ndarray,
+        limit: int = 10,
+        exclude_code: str | None = None,
+        filters: SearchFilters | None = None,
+    ) -> list[Hit]:
+        """Top `limit` by cosine similarity among products passing `filters`, filtered inside the
+        store while it walks the index (no over-fetch and post-filter in Python)."""
+        ...

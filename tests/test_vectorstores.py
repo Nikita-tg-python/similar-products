@@ -1,30 +1,9 @@
 import numpy as np
 import pytest
 
-from app import db
 from app.embeddings import EMBEDDING_DIM, FakeEmbedder, embedding_text, get_embedder
-from app.ingest.source import Product, iter_local_rows, normalize
-from app.vectorstores.pgvector_store import PgvectorStore
+from app.ingest.source import Product
 from app.vectorstores.qdrant_store import point_id
-from scripts.build_fixture import FIXTURE
-from tests.test_ingest import ROOT
-
-
-@pytest.fixture(scope="module")
-def products():
-    return [normalize(r) for r in iter_local_rows(ROOT / FIXTURE)]
-
-
-@pytest.fixture(scope="module")
-def vectors(products):
-    return FakeEmbedder().encode([embedding_text(p) for p in products])
-
-
-@pytest.fixture
-def pgvector_store(pg_schema, products):
-    db.apply_migrations(pg_schema)
-    db.upsert_products(pg_schema, products)
-    return PgvectorStore(pg_schema)
 
 
 @pytest.fixture(params=["qdrant", "pgvector"])
