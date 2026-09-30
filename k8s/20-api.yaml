@@ -1,0 +1,65 @@
+# Image `similar-products:dev` is built locally and loaded into kind (`make kind-up`), never pulled.
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: similar-products
+spec:
+  type: NodePort  # also reachable at localhost:8800 through kind-config.yaml's port mapping
+  selector: {app: api}
+  ports:
+    - {name: http, port: 8000, targetPort: 8000, nodePort: 30800}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: similar-products
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: api}
+  template:
+    metadata:
+      labels: {app: api}
+      annotations:
+        kubectl.kubernetes.io/default-container: api
+    spec:
+      # docker compose's depends_on: without it the API starts before the databases, fails its
+      # migrations and restarts a few times before settling.
+      initContainers:
+        - name: wait-for-deps
+          image: similar-products:dev
+          imagePullPolicy: Never
+          command: ["python", "-m", "scripts.wait_for", "postgres:5432", "qdrant:6333", "redis:6379"]
+      containers:
+        - name: api
+          image: similar-products:dev
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef: {name: app-config}
+            - secretRef: {name: postgres}
+            - secretRef: {name: llm-keys, optional: true}
+          ports:
+            - containerPort: 8000
+          # The startup downloads the embedding model once per pod (~90 MB) and waits for the
+          # databases (migrations): give it up to 5 minutes before the other probes start.
+          startupProbe:
+            tcpSocket: {port: 8000}
+            periodSeconds: 5
+            failureThreshold: 60
+          # /health is 200 only when postgres, qdrant and redis all answer: out of the Service
+          # while one is down, but not restarted for it (liveness checks the process only).
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: 8000}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 200m, memory: 768Mi}
+            limits: {memory: 2Gi}
+          volumeMounts:
+            - {name: hf-cache, mountPath: /root/.cache/huggingface}
+      volumes:
+        - {name: hf-cache, emptyDir: {}}

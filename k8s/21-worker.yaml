@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: similar-products
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: worker}
+  template:
+    metadata:
+      labels: {app: worker}
+      annotations:
+        kubectl.kubernetes.io/default-container: worker
+    spec:
+      # Warm shutdown lets the current batch finish (~20-35 s) instead of leaving an open
+      # transaction behind (the KAN-58 incident).
+      terminationGracePeriodSeconds: 120
+      initContainers:
+        - name: wait-for-deps
+          image: similar-products:dev
+          imagePullPolicy: Never
+          command: ["python", "-m", "scripts.wait_for", "postgres:5432", "qdrant:6333", "redis:6379"]
+      containers:
+        - name: worker
+          image: similar-products:dev
+          imagePullPolicy: Never
+          command: ["rq", "worker", "ingest", "--url=redis://redis:6379/0", "--with-scheduler",
+                    "--worker-class=rq.worker.SimpleWorker"]
+          envFrom:
+            - configMapRef: {name: app-config}
+            - secretRef: {name: postgres}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {memory: 2Gi}
+          volumeMounts:
+            - {name: hf-cache, mountPath: /root/.cache/huggingface}
+      volumes:
+        - {name: hf-cache, emptyDir: {}}

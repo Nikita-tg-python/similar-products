@@ -1,0 +1,32 @@
+# Non-secret settings (the .env values that are not keys). Service hostnames are the k8s Services.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: similar-products
+data:
+  POSTGRES_USER: products
+  POSTGRES_DB: products
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_PREFER_GRPC: "true"
+  REDIS_URL: redis://redis:6379/0
+  EMBEDDING_PROVIDER: sentence-transformers
+  EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+  LLM_PROVIDER: gemini
+  GEMINI_MODEL: gemini-3.5-flash-lite
+  GROQ_MODEL: openai/gpt-oss-120b
+  TRACING_EXPORTER: tree
+  OMP_NUM_THREADS: "2"
+---
+# The database password, for a local kind cluster only. LLM keys are NOT here: they go in the
+# optional Secret `llm-keys`, created from your .env (see README), so no key is ever committed.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres
+  namespace: similar-products
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: products

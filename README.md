@@ -25,7 +25,47 @@ make check-stores      # однакові вектори в обох базах,
 
 Якщо порти зайняті — змініть `API_PORT`, `POSTGRES_HOST_PORT`, `QDRANT_HOST_PORT`, `REDIS_HOST_PORT` у `.env`.
 
-> Розгортання на kind — KAN-63.
+### Kubernetes (kind)
+
+Той самий стек у локальному kind-кластері, без хмари. Маніфести лежать у [k8s/](k8s/), конфіг кластера —
+у [kind-config.yaml](kind-config.yaml).
+
+```bash
+make kind-up     # = kind create cluster --config kind-config.yaml
+                 #   docker build -t similar-products:dev . && kind load docker-image similar-products:dev
+                 #   kubectl apply -f k8s/ && kubectl rollout status ...   (~3 хв на чистому кластері)
+kubectl -n similar-products port-forward svc/api 8000:8000
+curl localhost:8000/health
+```
+
+Без `port-forward` API доступний на `localhost:8800` (NodePort 30800 через port-mapping kind).
+Прибрати все: `make kind-down`.
+
+- **Що піднімається** (namespace `similar-products`): `postgres` і `qdrant` (StatefulSet + PVC по 2 Gi),
+  `redis`, `api`, `worker` × 2. Налаштування лежать у ConfigMap `app-config`, пароль БД — у Secret
+  `postgres`.
+- **Ключі LLM у репозиторії немає.** Їх бере необов'язковий Secret `llm-keys`, без нього `/search`
+  відповідає 503 `llm_not_configured`, а решта працює:
+  ```bash
+  kubectl -n similar-products create secret generic llm-keys \
+    --from-env-file=<(grep -E '^(GEMINI|GROQ)_API_KEY=' .env)
+  kubectl -n similar-products rollout restart deployment/api
+  ```
+- **Дані:** кластер стартує з порожніми базами. Швидкий смоук (fixture, 326 рядків, ~1 хв):
+  ```bash
+  kubectl -n similar-products exec deploy/api -- python -m app.ingest.producer --source tests/fixtures/sample_products.parquet
+  ```
+  Повна вибірка (~20 хв):
+  ```bash
+  POD=$(kubectl -n similar-products get pod -l app=api -o jsonpath='{.items[0].metadata.name}')
+  kubectl -n similar-products cp data/sample_50k.parquet $POD:/tmp/sample_50k.parquet
+  kubectl -n similar-products exec $POD -- python -m app.ingest.producer --source /tmp/sample_50k.parquet
+  ```
+- **Порядок старту:** init-контейнер `wait-for-deps` ([scripts/wait_for.py](scripts/wait_for.py)) чекає
+  на postgres, qdrant і redis. Без нього api та воркери падали на старті й перезапускалися 2–4 рази.
+- **Проби API:** `readinessProbe` дивиться `/health` (под виходить із Service, поки якась база
+  лежить), а `livenessProbe` — лише TCP, щоб падіння бази не перезапускало API. `startupProbe` дає до
+  5 хв на завантаження моделі.
 
 ### Інжест
 
@@ -249,7 +289,7 @@ app/llm/        LLMClient і провайдери (gemini | groq | fake)
 eval/           порівняння Qdrant vs pgvector
 scripts/        build_sample.py (HF → data/), build_fixture.py (→ tests/fixtures/)
 data/           локальна вибірка, не комітиться
-k8s/            маніфести для kind
+k8s/            маніфести для kind (kind-config.yaml у корені; make kind-up / kind-down)
 tests/          офлайн-тести
 ```
 

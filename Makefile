@@ -2,7 +2,7 @@
 DC  = docker compose
 RUN = $(DC) run --rm --no-deps -v "$(CURDIR)":/app api
 
-.PHONY: up down build logs test lint sample fixture ingest check-stores compare
+.PHONY: up down build logs test lint sample fixture ingest check-stores compare kind-up kind-down
 
 up:
 	$(DC) up -d --build
@@ -36,3 +36,16 @@ check-stores:  ## Qdrant vs pgvector: same counts, same vectors, top-10 neighbou
 
 compare:  ## Qdrant (HTTP, gRPC) vs pgvector: p50/p95, recall@10 vs exact search -> eval/comparison_report.md + README
 	$(RUN) python -m eval.compare_backends $(ARGS)
+
+KIND_CLUSTER = similar-products
+KUBECTL = kubectl --context kind-$(KIND_CLUSTER) -n similar-products
+
+kind-up:  ## kind cluster + local image + k8s/*.yaml; waits until every pod is Ready
+	kind get clusters | grep -qx $(KIND_CLUSTER) || kind create cluster --config kind-config.yaml
+	docker build -t similar-products:dev .
+	kind load docker-image similar-products:dev --name $(KIND_CLUSTER)
+	kubectl --context kind-$(KIND_CLUSTER) apply -f k8s/
+	$(KUBECTL) rollout status statefulset/postgres statefulset/qdrant deployment/redis deployment/api deployment/worker --timeout=10m
+
+kind-down:
+	kind delete cluster --name $(KIND_CLUSTER)

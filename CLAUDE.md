@@ -55,6 +55,8 @@ POST текстовий запит  → LLM (1 виклик) → фільтри 
 - `make check-stores` — лічильники обох баз, розбіжність векторів, перетин топ-10 сусідів
 - Трейсинг: `app/telemetry.py` (`span(...)`, `in_current_context` для thread pool); у тестах
   `TRACING_EXPORTER=memory` → `telemetry.memory_exporter`. Нові кроки пайплайна — у власний спан
+- `make kind-up` / `make kind-down` — стек у kind (`k8s/*.yaml`, образ `similar-products:dev` вантажиться
+  в кластер, не тягнеться); API: `kubectl -n similar-products port-forward svc/api 8000:8000` або :8800
 - `make compare` — `eval/compare_backends.py`: p50/p95 і recall@10 проти точного косинуса →
   `eval/comparison_report.md` і таблиця між маркерами в README (не редагувати її вручну)
 - Тести: `EMBEDDING_PROVIDER=fake` і `LLM_PROVIDER=fake` примусово (`tests/conftest.py`), Qdrant —
