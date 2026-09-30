@@ -62,6 +62,22 @@ Fixture (326 рядків) покриває кожен випадок з `CASES`
 vegan yes/no/maybe/unknown, Nutri-Score a–e і невідомий, цукор низький/високий/невідомий, алергени (горіхи,
 арахіс, молоко, глютен, яйця, соя), лише сліди горіхів, печиво, у т.ч. приклад із задачі.
 
+### Схема Postgres
+
+`products` ([migrations/](migrations/)): поля-фільтри (`allergens_tags`, `traces_tags`, `categories_tags`,
+`vegan`, `nutriscore_grade`, `sugars_100g`, …) і `embedding vector(384)`. Індекси:
+
+- `products_embedding_hnsw` — HNSW, `vector_cosine_ops`, `m=16`, `ef_construction=64` (дефолти pgvector);
+- GIN на `allergens_tags`, `traces_tags`, `categories_tags`.
+
+`EXPLAIN ANALYZE` на копії 50 000 продуктів з випадковими векторами (pgvector 0.8.6):
+
+| Запит | План | Час |
+| --- | --- | --- |
+| `ORDER BY embedding <=> $1 LIMIT 10` | `Index Scan using products_embedding_hnsw` | 1.7 мс |
+| те саме + `vegan='yes' AND NOT allergens_tags && '{en:nuts,en:peanuts}' AND sugars_100g <= 5`, `hnsw.iterative_scan = relaxed_order` | `Index Scan using products_embedding_hnsw` + Filter, 10 з 10 рядків | 7.7 мс |
+| `categories_tags && '{en:biscuits}'` | `Bitmap Index Scan on products_categories_gin` | 6.8 мс |
+
 ## Приклади запитів
 
 > KAN-59/KAN-60: пошук за кодом продукту, текстовий запит (у т.ч. «веганське печиво без горіхів з
@@ -126,6 +142,13 @@ tests/          офлайн-тести
   жили в одному місці. [app/ingest/producer.py](app/ingest/producer.py)
 - **Міграції** (`migrations/*.sql`, ідемпотентні) застосовують API на старті і продюсер перед
   інжестом. Advisory lock не дає їм гонитися. [app/db.py](app/db.py)
+- **Колонка `vegan`, а не `vegan_status`** (як у тексті KAN-57): назва вже була в `Product` з KAN-55,
+  а значення ті самі (`yes`/`no`/`maybe`/`unknown`). [migrations/001_products.sql](migrations/001_products.sql)
+- **Вектор і індекси — окрема міграція `002`**, а не правка `001`. `001` вже застосована на заповненій
+  базі, і `CREATE TABLE IF NOT EXISTS` не додав би в неї колонку.
+  [migrations/002_pgvector.sql](migrations/002_pgvector.sql)
+- **Фільтрований kNN у pgvector — через `hnsw.iterative_scan = relaxed_order`.** Без нього HNSW віддає
+  лише `ef_search` (40) кандидатів до фільтра, і рідкісний фільтр повертав би менше 10 результатів.
 - **Орієнтири для цукру у fixture:** «низький» ≤ 5 г/100 г (claim ЄС, Reg. (EC) 1924/2006), «високий»
   > 22.5 г/100 г (UK FSA). У вибірці 50k лише 3 веганських печива без горіхів з цукром ≤ 5 г, і 54 веганських
   печива загалом. Остаточний поріг «низький цукор» для пошуку фіксується в KAN-59/KAN-60.

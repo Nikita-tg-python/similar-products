@@ -1,14 +1,11 @@
 import math
-import uuid
 from pathlib import Path
 
-import psycopg
 import pytest
 from fakeredis import FakeStrictRedis
 from rq import Queue
 
 from app import db
-from app.config import settings
 from app.ingest import producer, worker
 from app.ingest.source import iter_local_rows, normalize
 from scripts.build_fixture import FIXTURE
@@ -79,23 +76,6 @@ def test_upsert_sql_updates_every_column_on_conflict():
         assert f"%({column})s" in sql
         if column != "code":
             assert f"{column} = EXCLUDED.{column}" in sql
-
-
-@pytest.fixture
-def pg_schema():
-    """A throwaway schema in the compose Postgres; skipped when it isn't running."""
-    try:
-        conn = psycopg.connect(settings.database_url, connect_timeout=2, autocommit=True)
-    except psycopg.OperationalError:
-        pytest.skip("Postgres is not running (make up)")
-    schema = f"test_{uuid.uuid4().hex[:8]}"
-    conn.execute(f"CREATE SCHEMA {schema}")
-    conn.execute(f"SET search_path TO {schema}")
-    try:
-        yield conn
-    finally:
-        conn.execute(f"DROP SCHEMA {schema} CASCADE")
-        conn.close()
 
 
 def test_upsert_into_postgres_is_idempotent(pg_schema):
