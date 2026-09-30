@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     redis_url: str = "redis://localhost:6379/0"
     qdrant_collection: str = "products"
+    # gRPC by default: the REST client (httpx) adds a steady ~43 ms per search here (KAN-61)
+    qdrant_prefer_grpc: bool = True
+    qdrant_grpc_port: int = 6334
     embedding_provider: str = "sentence-transformers"  # sentence-transformers | fake
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     llm_provider: str = "gemini"  # gemini | groq | fake

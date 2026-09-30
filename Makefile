@@ -2,7 +2,7 @@
 DC  = docker compose
 RUN = $(DC) run --rm --no-deps -v "$(CURDIR)":/app api
 
-.PHONY: up down build logs test lint sample fixture ingest check-stores
+.PHONY: up down build logs test lint sample fixture ingest check-stores compare
 
 up:
 	$(DC) up -d --build
@@ -33,3 +33,6 @@ ingest:  ## data/sample_50k.parquet -> RQ queue -> workers -> Postgres; waits an
 
 check-stores:  ## Qdrant vs pgvector: same counts, same vectors, top-10 neighbour overlap
 	$(RUN) python -m scripts.check_stores $(ARGS)
+
+compare:  ## Qdrant (HTTP, gRPC) vs pgvector: p50/p95, recall@10 vs exact search -> eval/comparison_report.md + README
+	$(RUN) python -m eval.compare_backends $(ARGS)
