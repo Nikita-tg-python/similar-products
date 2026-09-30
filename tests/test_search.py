@@ -46,6 +46,7 @@ def passes(p: Product, f: SearchFilters) -> bool:
         not banned & (set(p.allergens_tags) | set(p.traces_tags))
         and (not f.vegan_only or p.vegan == "yes")
         and (f.nutriscore_grades is None or p.nutriscore_grade in f.nutriscore_grades)
+        and (f.sugars_max is None or (p.sugars_100g is not None and p.sugars_100g <= f.sugars_max))
     )
 
 
@@ -53,6 +54,8 @@ FILTERS = [
     SearchFilters(exclude_allergens=["nuts"]),
     SearchFilters(vegan_only=True),
     SearchFilters(nutriscore_max="b"),
+    SearchFilters(sugars_max=5),
+    SearchFilters(exclude_allergens=["nuts"], vegan_only=True, sugars_max=5),
     SearchFilters(exclude_allergens=["nuts", "milk"], vegan_only=True, nutriscore_max="c"),
 ]
 
@@ -124,6 +127,7 @@ def test_similar_returns_products_and_the_filters_applied(client, products, back
         "exclude_allergens": [],
         "vegan_only": False,
         "nutriscore_max": None,
+        "sugars_max": None,
     }
     assert len(body["results"]) == 5
     assert code not in {r["code"] for r in body["results"]}
@@ -170,6 +174,7 @@ def test_all_filters_through_the_api(client, products):
         "exclude_allergens": ["en:gluten", "en:milk", "en:nuts"],
         "vegan_only": True,
         "nutriscore_max": "c",
+        "sugars_max": None,
     }
     for item in body["results"]:
         assert item["vegan"] == "yes" and item["nutriscore_grade"] in {"a", "b", "c"}

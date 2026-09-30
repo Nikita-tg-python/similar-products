@@ -1,7 +1,8 @@
 import os
 
-# Before any app import: tests never load a real embedding model (offline, instant).
+# Before any app import: tests never load a real embedding model or call a real LLM.
 os.environ["EMBEDDING_PROVIDER"] = "fake"
+os.environ["LLM_PROVIDER"] = "fake"
 
 import uuid  # noqa: E402
 from pathlib import Path  # noqa: E402

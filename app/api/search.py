@@ -1,17 +1,35 @@
-"""GET /products/{code}/similar: neighbours of a product's own vector, filtered inside the store."""
+"""Search endpoints. The ranking is always a vector search and the filtering always happens inside
+the store; the LLM (POST /search only) just turns the text into filters and an English phrase.
+
+- GET  /products/{code}/similar: neighbours of a product's own vector
+- POST /search: free text -> ParsedQuery (one LLM call) -> embedding + filters -> neighbours
+"""
 
 import time
 from collections.abc import Iterator
 from typing import Annotated
 
+import numpy as np
 import psycopg
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
 from app import db
+from app.embeddings import get_embedder
 from app.errors import ApiError
-from app.schemas import Backend, NutriScore, SearchFilters, SimilarProduct, SimilarResponse
+from app.llm import LLMClient
+from app.llm.parse_query import parse_query
+from app.schemas import (
+    Backend,
+    NutriScore,
+    SearchFilters,
+    SearchRequest,
+    SearchResponse,
+    SimilarProduct,
+    SimilarResponse,
+)
 from app.vectorstores import get_qdrant_store
 from app.vectorstores.base import VectorStore
 from app.vectorstores.pgvector_store import PgvectorStore
@@ -27,6 +45,10 @@ def get_conn(request: Request) -> Iterator[psycopg.Connection]:
 
 def get_qdrant() -> QdrantStore:
     return get_qdrant_store()
+
+
+def get_llm(request: Request) -> LLMClient:
+    return request.app.state.llm
 
 
 def parse_filters(
@@ -67,20 +89,56 @@ def similar_products(
     if vector is None:
         raise ApiError(409, "not_indexed", f"product {code!r} has no vector in {backend} yet")
 
-    started = time.perf_counter()
-    hits = store.search(vector, limit=limit, exclude_code=code, filters=filters)
-    took_ms = (time.perf_counter() - started) * 1000
-
-    # Product details always come from Postgres, whichever store ranked them.
-    details = db.fetch_products(conn, [h.code for h in hits])
+    results, took_ms = run_search(conn, store, vector, filters, limit, exclude_code=code)
     return SimilarResponse(
         product=product,
         backend=backend,
         filters_applied=filters,
-        took_ms=round(took_ms, 2),
-        results=[
-            SimilarProduct(**details[h.code].model_dump(), score=round(h.score, 4))
-            for h in hits
-            if h.code in details
-        ],
+        took_ms=took_ms,
+        results=results,
     )
+
+
+@router.post("/search", response_model=SearchResponse)
+async def search_text(
+    body: SearchRequest,
+    conn: Annotated[psycopg.Connection, Depends(get_conn)],
+    qdrant: Annotated[QdrantStore, Depends(get_qdrant)],
+    llm: Annotated[LLMClient, Depends(get_llm)],
+) -> SearchResponse:
+    parsed = await parse_query(llm, body.query)  # the only LLM call
+    filters, notes = parsed.to_filters()
+    vector = (await run_in_threadpool(get_embedder().encode, [parsed.semantic_text]))[0]
+    store: VectorStore = PgvectorStore(conn) if body.backend == "pgvector" else qdrant
+    results, took_ms = await run_in_threadpool(run_search, conn, store, vector, filters, body.limit)
+    return SearchResponse(
+        query=body.query,
+        parsed=parsed,
+        filters_applied=filters,
+        notes=notes,
+        backend=body.backend,
+        took_ms=took_ms,
+        results=results,
+    )
+
+
+def run_search(
+    conn: psycopg.Connection,
+    store: VectorStore,
+    vector: np.ndarray,
+    filters: SearchFilters,
+    limit: int,
+    exclude_code: str | None = None,
+) -> tuple[list[SimilarProduct], float]:
+    """Vector search with in-store filters; product details always come from Postgres, whichever
+    store ranked them. Returns (results, milliseconds spent in the vector search)."""
+    started = time.perf_counter()
+    hits = store.search(vector, limit=limit, exclude_code=exclude_code, filters=filters)
+    took_ms = round((time.perf_counter() - started) * 1000, 2)
+    details = db.fetch_products(conn, [h.code for h in hits])
+    results = [
+        SimilarProduct(**details[h.code].model_dump(), score=round(h.score, 4))
+        for h in hits
+        if h.code in details
+    ]
+    return results, took_ms

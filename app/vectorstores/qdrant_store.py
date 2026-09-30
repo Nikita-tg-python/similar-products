@@ -109,6 +109,11 @@ def qdrant_filter(filters: SearchFilters, exclude_code: str | None) -> models.Fi
         must.append(
             models.FieldCondition(key="nutriscore_grade", match=models.MatchAny(any=grades))
         )
+    if filters.sugars_max is not None:
+        # a null / missing sugars_100g never satisfies a range: unknown sugar is excluded
+        must.append(
+            models.FieldCondition(key="sugars_100g", range=models.Range(lte=filters.sugars_max))
+        )
     if not (must or must_not):
         return None
     return models.Filter(must=must or None, must_not=must_not or None)

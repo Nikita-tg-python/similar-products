@@ -10,7 +10,9 @@ from psycopg_pool import ConnectionPool
 from app import db, health
 from app.api import search
 from app.config import settings
+from app.embeddings import get_embedder
 from app.errors import register_error_handlers
+from app.llm import create_llm_client
 from app.vectorstores import get_qdrant_store
 
 logger = logging.getLogger(__name__)
@@ -28,7 +30,10 @@ def _migrate() -> list[str]:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logging.basicConfig(level=logging.INFO)
     logger.info("migrations applied: %s", await asyncio.to_thread(_migrate))
-    # Sync pool: search endpoints are plain `def`, run by FastAPI in its thread pool.
+    app.state.llm = create_llm_client(settings)
+    # Load the embedding model now, not on the first POST /search (several seconds).
+    await asyncio.to_thread(get_embedder)
+    # Sync pool: DB work runs in FastAPI's thread pool, never on the event loop.
     app.state.pool = ConnectionPool(
         settings.database_url, kwargs=db.CONNECT_KWARGS, min_size=1, max_size=10, open=False
     )

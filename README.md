@@ -120,7 +120,41 @@ curl "localhost:8000/products/3700036906990/similar?exclude_allergens=nuts,milk&
 
 ### Текстовий запит
 
-> KAN-60: «веганське печиво без горіхів з низьким вмістом цукру».
+```bash
+curl localhost:8000/search -H 'content-type: application/json' \
+  -d '{"query": "веганське печиво без горіхів з низьким вмістом цукру", "backend": "qdrant", "limit": 5}'
+```
+
+Як це працює:
+1. **Один виклик LLM** ([app/llm/parse_query.py](app/llm/parse_query.py); Gemini, Groq або FakeLLM)
+   перетворює текст на `ParsedQuery`: `semantic_text` (англійською, лише тип продукту),
+   `exclude_allergens`, `vegan_required`, `nutriscore_max`, `sugar_level`, `unsupported`. Якщо JSON
+   невалідний, буде один retry. Після двох невдач — 502 `llm_bad_response`, а не здогадка.
+2. **Детерміновано в коді** ([app/schemas.py](app/schemas.py) `ParsedQuery.to_filters`):
+   - назви алергенів стають тегами OFF;
+   - `sugar_level=low` стає `sugars_100g ≤ 5`;
+   - усе, що не вдалося виразити фільтром, потрапляє в `notes`.
+3. `semantic_text` кодується в ембединг, далі йде векторний пошук з фільтрами всередині бази, як у GET.
+
+**LLM ніколи не бачить каталог і не вирішує, що підходить.** Відповідь показує, як LLM прочитав запит
+(`parsed`), що база реально відфільтрувала (`filters_applied`) і чого застосувати не вдалося (`notes`).
+
+Приклад (Gemini, 50k продуктів, qdrant):
+
+```
+parsed:  {"semantic_text": "cookie biscuit", "exclude_allergens": ["nuts", "peanuts"], "vegan_required": true,
+          "nutriscore_max": null, "sugar_level": "low", "unsupported": []}
+filters: {"exclude_allergens": ["en:nuts", "en:peanuts"], "vegan_only": true, "sugars_max": 5.0}
+  0.503 Mon Petit Panda Carotte Citrouille  vegan=yes sugar=2.7  (biscuits salés)
+  0.432 Chips de panisse 80 grammes         vegan=yes sugar=1.5  (crackers)
+  0.417 Back Oblaten (70mm)                 vegan=yes sugar=2.0  (biscuits)
+  0.416 Hint Of Salt                        vegan=yes sugar=0.0  (crackers)
+  0.413 Waffeln aus Hirse                   vegan=yes sugar=0.7  (waffles)
+```
+
+У вибірці 50k взагалі мало продуктів, що проходять усі три фільтри і є печивом, тому нижче в списку
+йдуть сусідні категорії. Запит «sausages without pork» повертає ковбаски з поміткою
+`notes: ["not filtered (no such filter): 'without pork'"]`.
 
 ## Порівняння Qdrant vs pgvector
 
@@ -211,6 +245,18 @@ tests/          офлайн-тести
   яких згадано фундук, мигдаль, волоський горіх, кеш'ю тощо, у 729 (25 %) немає `en:nuts` ні в
   алергенах, ні в слідах. `exclude_allergens=nuts` їх не відкидає (приклад: «Pâte à tartiner
   noisettes et cacao»). Це обмеження даних, а не фільтра.
+- **LLM лише парсить запит.** `semantic_text` — тип продукту англійською з синонімами, без обмежень:
+  у ембедингу «vegan» піднімав будь-що з «Vegan» у назві (соус, чипси, протеїн), а «without nuts»
+  притягував би горіхи. Перевірено на живому Gemini: з «vegan cookies» у топі були Vegan Mayo і
+  протеїн, з «cookie biscuit» — печиво й крекери. [app/llm/parse_query.py](app/llm/parse_query.py)
+- **«Низький цукор» ≤ 5 г/100 г** (claim ЄС для твердих продуктів; 2.5 г/100 мл для напоїв не
+  застосовується, бо OFF не розрізняє їх надійно). Невідомий цукор фільтр не проходить.
+  [app/schemas.py](app/schemas.py) (`LOW_SUGAR_MAX_G`)
+- **`vegan_required: false` = без фільтра** (просити «не веганське» ніхто не буде).
+- **Умови без відповідного фільтра не губляться.** LLM перелічує їх в `unsupported` («without
+  pork», «organic», «до 3 євро»), і вони потрапляють у `notes`.
+- **LLM іноді розширює «без горіхів» до горіхів і арахісу.** Для алергіків це безпечніше, тож не
+  виправляється.
 - **Однаковий `ef` пошуку в обох базах** — `SEARCH_EF = 100` (pgvector `hnsw.ef_search`, Qdrant
   `hnsw_ef`). [app/vectorstores/base.py](app/vectorstores/base.py)
 - **Орієнтири для цукру у fixture:** «низький» ≤ 5 г/100 г (claim ЄС, Reg. (EC) 1924/2006), «високий»

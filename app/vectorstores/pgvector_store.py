@@ -74,4 +74,7 @@ def sql_filter(filters: SearchFilters, exclude_code: str | None) -> tuple[str, d
     if (grades := filters.nutriscore_grades) is not None:
         clauses.append("nutriscore_grade = ANY(%(grades)s)")
         params["grades"] = grades
+    if filters.sugars_max is not None:
+        clauses.append("sugars_100g <= %(sugars_max)s")  # NULL (unknown) fails
+        params["sugars_max"] = filters.sugars_max
     return " AND ".join(clauses), params
