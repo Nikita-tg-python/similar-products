@@ -22,3 +22,4 @@ build/
 .idea/
 .DS_Store
 data/*.parquet
+data/*.part

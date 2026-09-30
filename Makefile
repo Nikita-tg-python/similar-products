@@ -2,7 +2,7 @@
 DC  = docker compose
 RUN = $(DC) run --rm --no-deps -v "$(CURDIR)":/app api
 
-.PHONY: up down build logs test lint
+.PHONY: up down build logs test lint sample fixture
 
 up:
 	$(DC) up -d --build
@@ -21,3 +21,9 @@ test:  ## no network, no LLM keys (FakeLLM)
 
 lint:
 	$(RUN) sh -c "ruff check . && ruff format --check ."
+
+sample:  ## >= 50k useful rows from HF without downloading the 7.86 GB file -> data/sample_50k.parquet
+	$(RUN) python -m scripts.build_sample $(ARGS)
+
+fixture:  ## tests/fixtures/sample_products.parquet from the local sample (every filter case covered)
+	$(RUN) python -m scripts.build_fixture $(ARGS)
