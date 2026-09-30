@@ -6,7 +6,8 @@
 
 ## Стек
 
-Python 3.12 (uv), FastAPI, PostgreSQL 16 + pgvector (asyncpg), Qdrant (self-hosted), Redis + RQ (черга
+Python 3.12 (uv), FastAPI, PostgreSQL 16 + pgvector (psycopg 3; SQL-міграції `migrations/*.sql`,
+ідемпотентні, застосовуються на старті), Qdrant (self-hosted), Redis + RQ (черга
 інжесту), `sentence-transformers` (`all-MiniLM-L6-v2`, CPU), pyarrow + `HfFileSystem` (стрім row groups),
 OpenTelemetry, pydantic v2, pytest, ruff. Docker / docker compose, kind. LLM: Gemini (за замовчуванням)
 або Groq — лише безкоштовні тарифи без картки.
@@ -49,3 +50,5 @@ POST текстовий запит  → LLM (1 виклик) → фільтри 
 - `make test` — pytest без мережі й ключів; `make lint` — ruff
 - `make sample` — ≥50k корисних рядків з HF → `data/sample_50k.parquet` (~130 МБ трафіку, ~1.5 хв);
   `make fixture` — `tests/fixtures/sample_products.parquet` з вибірки (тести перевіряють покриття `CASES`)
+- `make ingest` — вибірка → RQ `ingest` (батчі по 500) → `worker` × 2 → upsert у `products` (ідемпотентно)
+- Інтеграційні тести з Postgres працюють у тимчасовій схемі і пропускаються, якщо БД не піднята

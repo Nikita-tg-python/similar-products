@@ -2,8 +2,8 @@
 
 import asyncio
 
-import asyncpg
 import httpx
+import psycopg
 from redis.asyncio import Redis
 
 from app.config import Settings
@@ -13,11 +13,11 @@ TIMEOUT_S = 2.0
 
 async def check_postgres(settings: Settings) -> bool:
     try:
-        conn = await asyncpg.connect(settings.database_url, timeout=TIMEOUT_S)
-        try:
-            return await conn.fetchval("SELECT 1") == 1
-        finally:
-            await conn.close()
+        async with await psycopg.AsyncConnection.connect(
+            settings.database_url, connect_timeout=TIMEOUT_S
+        ) as conn:
+            row = await (await conn.execute("SELECT 1")).fetchone()
+            return row == (1,)
     except Exception:
         return False
 

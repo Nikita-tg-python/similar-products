@@ -8,15 +8,17 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
-    "asyncpg>=0.29",
     "redis>=5.0",
     "httpx>=0.27",
     "pyarrow>=17",
     "huggingface-hub>=0.26",
+    "rq>=2.0",
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "fakeredis>=2.26",
     "pytest>=8.2",
     "ruff>=0.6",
 ]

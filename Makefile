@@ -2,7 +2,7 @@
 DC  = docker compose
 RUN = $(DC) run --rm --no-deps -v "$(CURDIR)":/app api
 
-.PHONY: up down build logs test lint sample fixture
+.PHONY: up down build logs test lint sample fixture ingest
 
 up:
 	$(DC) up -d --build
@@ -27,3 +27,6 @@ sample:  ## >= 50k useful rows from HF without downloading the 7.86 GB file -> d
 
 fixture:  ## tests/fixtures/sample_products.parquet from the local sample (every filter case covered)
 	$(RUN) python -m scripts.build_fixture $(ARGS)
+
+ingest:  ## data/sample_50k.parquet -> RQ queue -> workers -> Postgres; waits and reports (needs `make up`)
+	$(RUN) python -m app.ingest.producer $(ARGS)

@@ -1,10 +1,30 @@
+import asyncio
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from app import health
+from app import db, health
 from app.config import settings
 
-app = FastAPI(title="Similar Products", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+
+def _migrate() -> list[str]:
+    with db.connect(settings.database_url) as conn:
+        return db.apply_migrations(conn)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    logging.basicConfig(level=logging.INFO)
+    logger.info("migrations applied: %s", await asyncio.to_thread(_migrate))
+    yield
+
+
+app = FastAPI(title="Similar Products", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")

@@ -16,13 +16,29 @@ pgvector, щоб чесно порівняти обидві бази на одн
 
 ```bash
 cp .env.example .env   # вписати GEMINI_API_KEY або GROQ_API_KEY
-make up                # postgres (pgvector), qdrant, redis, api
+make up                # postgres (pgvector), qdrant, redis, api, 2 × worker
 curl localhost:8000/health
+make sample            # ≥50k продуктів з HF → data/sample_50k.parquet (~1.5 хв)
+make ingest            # вибірка → черга Redis/RQ → воркери → Postgres (~15 с), чекає й звітує
 ```
 
 Якщо порти зайняті — змініть `API_PORT`, `POSTGRES_HOST_PORT`, `QDRANT_HOST_PORT`, `REDIS_HOST_PORT` у `.env`.
 
-> Інжест вибірки — KAN-55/KAN-56; розгортання на kind — KAN-63.
+> Розгортання на kind — KAN-63.
+
+### Інжест
+
+Продюсер ([app/ingest/producer.py](app/ingest/producer.py)) застосовує міграції, кладе вибірку в RQ-чергу
+`ingest` батчами по 500 рядків і стежить за прогресом (скільки джобів зроблено, скільки в черзі, скільки
+рядків записано). Воркери (`rq worker ingest`, сервіс `worker`, 2 репліки;
+[app/ingest/worker.py](app/ingest/worker.py)) нормалізують сирі рядки й роблять upsert у `products` за `code`.
+
+- **Ідемпотентність:** `INSERT ... ON CONFLICT (code) DO UPDATE`. Повторний `make ingest` лишає 50 000
+  рядків, лише оновлює `updated_at`.
+- **Помилки:** кривий рядок не валить батч, а рахується як `invalid`. Помилка БД валить батч, і RQ
+  повторює його (3 спроби: через 5, 30 і 60 с). Після цього батч іде у failed registry, а продюсер
+  виходить з кодом 1.
+- **Замір 2026-09-30:** 50 000 рядків, 100 джобів, 2 воркери — **13 с**.
 
 ## Дані
 
@@ -74,7 +90,8 @@ make lint
 ## Структура
 
 ```
-app/            FastAPI (main.py, config.py, health.py)
+app/            FastAPI (main.py, config.py, health.py), db.py (міграції, upsert)
+migrations/     SQL-схема, ідемпотентна, застосовується на старті
 app/api/        роутери пошуку
 app/ingest/     стрім HF, черга Redis/RQ, воркери
 app/vectorstores/  Qdrant і pgvector за спільним інтерфейсом
@@ -104,6 +121,11 @@ tests/          офлайн-тести
   ембедингів (KAN-58). [app/ingest/source.py](app/ingest/source.py) (`pick_text`)
 - **Невідоме — це `None`/`unknown`, а не «ні»:** Nutri-Score `unknown`/`not-applicable`, цукор поза 0–100 г,
   відсутній веганський тег. [app/ingest/source.py](app/ingest/source.py)
+- **Батчі по 500 рядків, а не джоб на рядок.** RQ форкає процес на кожен джоб, тож 50k однорядкових
+  джобів переважно форкалися б. Джоб несе сирі рядки, а нормалізація відбувається у воркері, щоб правила
+  жили в одному місці. [app/ingest/producer.py](app/ingest/producer.py)
+- **Міграції** (`migrations/*.sql`, ідемпотентні) застосовують API на старті і продюсер перед
+  інжестом. Advisory lock не дає їм гонитися. [app/db.py](app/db.py)
 - **Орієнтири для цукру у fixture:** «низький» ≤ 5 г/100 г (claim ЄС, Reg. (EC) 1924/2006), «високий»
   > 22.5 г/100 г (UK FSA). У вибірці 50k лише 3 веганських печива без горіхів з цукром ≤ 5 г, і 54 веганських
   печива загалом. Остаточний поріг «низький цукор» для пошуку фіксується в KAN-59/KAN-60.

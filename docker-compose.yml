@@ -61,6 +61,25 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
 
+  worker:
+    build: .
+    command: ["rq", "worker", "ingest", "--url", "redis://redis:6379/0", "--with-scheduler"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+
 volumes:
   pgdata:
   qdrant:
