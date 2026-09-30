@@ -13,7 +13,7 @@ pgvector, щоб чесно порівняти обидві бази на одн
 і `kubectl`.
 
 ```bash
-git clone <repo> similar-products && cd similar-products
+git clone https://github.com/Nikita-tg-python/similar-products.git && cd similar-products
 cp .env.example .env        # вписати GEMINI_API_KEY (або LLM_PROVIDER=groq + GROQ_API_KEY)
 make up                     # postgres+pgvector, qdrant, redis, api, 2 × worker; чекає, доки API стане healthy
                             # (перший раз до ~10 хв: збірка образу ~2.5 хв + завантаження моделі з HF)
