@@ -5,8 +5,10 @@ the store; the LLM (POST /search only) just turns the text into filters and an E
 - POST /search: free text -> ParsedQuery (one LLM call) -> embedding + filters -> neighbours
 """
 
+import logging
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated
 
 import numpy as np
@@ -36,6 +38,7 @@ from app.vectorstores.base import VectorStore
 from app.vectorstores.pgvector_store import PgvectorStore
 from app.vectorstores.qdrant_store import QdrantStore
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["search"])
 
 
@@ -86,7 +89,7 @@ def similar_products(
     if product is None:
         raise ApiError(404, "product_not_found", f"no product with code {code!r}")
     store: VectorStore = PgvectorStore(conn) if backend == "pgvector" else qdrant
-    with span("get_vector", backend=backend, code=code):
+    with span("get_vector", backend=backend, code=code), backend_errors(store.name):
         vector = store.get_vector(code)
     if vector is None:
         raise ApiError(409, "not_indexed", f"product {code!r} has no vector in {backend} yet")
@@ -125,6 +128,20 @@ async def search_text(
     )
 
 
+@contextmanager
+def backend_errors(backend: str) -> Iterator[None]:
+    """A store that is down or too slow is a 503 the client can retry, not an opaque 500."""
+    try:
+        yield
+    except ApiError:
+        raise
+    except Exception as exc:
+        logger.exception("%s failed", backend)
+        raise ApiError(
+            503, "backend_unavailable", f"{backend} did not answer ({type(exc).__name__})"
+        ) from exc
+
+
 def run_search(
     conn: psycopg.Connection,
     store: VectorStore,
@@ -136,7 +153,10 @@ def run_search(
     """Vector search with in-store filters; product details always come from Postgres, whichever
     store ranked them. Returns (results, milliseconds spent in the vector search)."""
     active = filters.model_dump_json(exclude_defaults=True)
-    with span("vector_search", backend=store.name, limit=limit, filters=active) as s:
+    with (
+        span("vector_search", backend=store.name, limit=limit, filters=active) as s,
+        backend_errors(store.name),
+    ):
         started = time.perf_counter()
         hits = store.search(vector, limit=limit, exclude_code=exclude_code, filters=filters)
         took_ms = round((time.perf_counter() - started) * 1000, 2)

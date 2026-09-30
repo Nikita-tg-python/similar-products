@@ -82,12 +82,18 @@ class Product(BaseModel):
     countries_tags: list[str] = []
 
 
+# Placeholders some OFF apps store instead of leaving a field empty: 1009 products of the sample
+# have ingredients "undefined", which would otherwise count as a known composition (KAN-64).
+_PLACEHOLDERS = {"undefined", "null", "none"}
+
+
 def _clean(text: str | None) -> str | None:
-    """OFF texts carry allergen markup (`<span class="allergen">`), entities and \\r\\n."""
+    """OFF texts carry allergen markup (`<span class="allergen">`), entities, \\r\\n and
+    placeholders."""
     if not text:
         return None
     text = _SPACE_RE.sub(" ", html.unescape(_TAG_RE.sub("", text))).strip()
-    return text or None
+    return text if text and text.lower() not in _PLACEHOLDERS else None
 
 
 def pick_text(entries: list[dict[str, Any]] | None, lang: str | None) -> str | None:

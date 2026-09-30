@@ -36,7 +36,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await asyncio.to_thread(get_embedder)
     # Sync pool: DB work runs in FastAPI's thread pool, never on the event loop.
     app.state.pool = ConnectionPool(
-        settings.database_url, kwargs=db.CONNECT_KWARGS, min_size=1, max_size=10, open=False
+        settings.database_url,
+        kwargs=db.CONNECT_KWARGS,
+        min_size=1,
+        max_size=10,
+        open=False,
+        # One round trip per checkout; a connection the server dropped (restart, crash recovery,
+        # keepalive) is replaced instead of failing the request (KAN-64 rehearsal: a 500).
+        check=ConnectionPool.check_connection,
     )
     await asyncio.to_thread(app.state.pool.open, wait=True)
     yield

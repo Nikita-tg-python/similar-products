@@ -2,10 +2,17 @@
 DC  = docker compose
 RUN = $(DC) run --rm --no-deps -v "$(CURDIR)":/app api
 
-.PHONY: up down build logs test lint sample fixture ingest check-stores compare kind-up kind-down
+.PHONY: up down build logs test test-offline lint sample fixture ingest check-stores compare kind-up kind-down
 
-up:
+up:  ## start everything and wait until /health is 200 (the first start downloads the embedding model)
 	$(DC) up -d --build
+	@echo "waiting for the API: the first start downloads the embedding model (~90 MB), a few minutes..."
+	@url=http://$$($(DC) port api 8000 | tail -1 | sed 's/0.0.0.0/localhost/'); \
+	for i in $$(seq 1 300); do \
+		if curl -sf $$url/health >/dev/null; then echo "API is up: $$url  (docs: $$url/docs)"; exit 0; fi; \
+		sleep 2; \
+	done; \
+	echo "API is not healthy after 10 min: see docker compose logs api"; exit 1
 
 down:
 	$(DC) down
@@ -18,6 +25,10 @@ logs:
 
 test:  ## no network, no LLM keys (FakeLLM)
 	$(RUN) pytest -q
+
+test-offline:  ## the unit suite in a container with no network at all and no .env (no keys)
+	$(DC) build -q api
+	docker run --rm --network none $$($(DC) config --images | grep -- '-api$$') pytest -q -m "not integration"
 
 lint:
 	$(RUN) sh -c "ruff check . && ruff format --check ."
@@ -45,6 +56,7 @@ kind-up:  ## kind cluster + local image + k8s/*.yaml; waits until every pod is R
 	docker build -t similar-products:dev .
 	kind load docker-image similar-products:dev --name $(KIND_CLUSTER)
 	kubectl --context kind-$(KIND_CLUSTER) apply -f k8s/
+	$(KUBECTL) rollout restart deployment/api deployment/worker  # same tag, new image: pick it up
 	$(KUBECTL) rollout status statefulset/postgres statefulset/qdrant deployment/redis deployment/api deployment/worker --timeout=10m
 
 kind-down:

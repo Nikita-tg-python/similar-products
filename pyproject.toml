@@ -37,6 +37,7 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["."]
 # local (in-memory) Qdrant ignores payload indexes; the server builds them
+markers = ["integration: needs the docker compose Postgres (make up); skipped when it is not running"]
 filterwarnings = [
     "ignore:Payload indexes have no effect in the local Qdrant",
     "ignore:Local mode performs exact",

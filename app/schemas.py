@@ -53,11 +53,15 @@ def allergen_tag(name: str) -> str:
 
 class SearchFilters(BaseModel):
     """Applied inside the database (SQL WHERE / Qdrant payload filter), never by post-filtering.
-    Unknown values are never a match: no Nutri-Score fails `nutriscore_max`, vegan status 'maybe' or
-    'unknown' fails `vegan_only`."""
+    Unknown values are never a match: no Nutri-Score fails `nutriscore_max`, vegan status 'maybe'
+    or 'unknown' fails `vegan_only`, unknown sugar fails `sugars_max`, and with `exclude_allergens`
+    a product whose ingredients are unknown fails too: in Open Food Facts empty allergen tags on
+    such a product mean "nobody entered them", not "free of" (KAN-64: hummus "without sesame")."""
 
     exclude_allergens: list[str] = Field(
-        default=[], description="Drops products listing these in allergens OR traces"
+        default=[],
+        description="Drops products listing these in allergens OR traces, and products whose "
+        "ingredients are unknown",
     )
     vegan_only: bool = False
     nutriscore_max: NutriScore | None = Field(

@@ -32,7 +32,11 @@ class Hit:
 
 
 def payload(product: Product) -> dict:
-    return product.model_dump(include=set(PAYLOAD_FIELDS))
+    # ingredients_known: an allergen filter only trusts products whose composition is known
+    # (app/schemas.py SearchFilters); in Postgres it is `ingredients_text IS NOT NULL`.
+    return product.model_dump(include=set(PAYLOAD_FIELDS)) | {
+        "ingredients_known": product.ingredients_text is not None
+    }
 
 
 class VectorStore(Protocol):

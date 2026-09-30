@@ -68,6 +68,7 @@ def sql_filter(filters: SearchFilters, exclude_code: str | None) -> tuple[str, d
         params["exclude_code"] = exclude_code
     if filters.exclude_allergens:
         clauses.append("NOT (allergens_tags && %(banned)s OR traces_tags && %(banned)s)")
+        clauses.append("ingredients_text IS NOT NULL")  # unknown composition does not pass
         params["banned"] = filters.exclude_allergens
     if filters.vegan_only:
         clauses.append("vegan = 'yes'")

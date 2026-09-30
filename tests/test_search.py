@@ -44,6 +44,7 @@ def passes(p: Product, f: SearchFilters) -> bool:
     banned = set(f.exclude_allergens)
     return (
         not banned & (set(p.allergens_tags) | set(p.traces_tags))
+        and (not banned or p.ingredients_text is not None)
         and (not f.vegan_only or p.vegan == "yes")
         and (f.nutriscore_grades is None or p.nutriscore_grade in f.nutriscore_grades)
         and (f.sugars_max is None or (p.sugars_100g is not None and p.sugars_100g <= f.sugars_max))
@@ -204,3 +205,18 @@ def test_product_without_vector_is_409(client, pg_schema):
     r = client.get("/products/new-1/similar", params={"backend": "pgvector"})
     assert r.status_code == 409
     assert r.json()["error"]["code"] == "not_indexed"
+
+
+def test_unknown_composition_fails_an_allergen_filter(filled_store, products, vectors):
+    """No ingredients and no allergen tags means "unknown", not "free of" (KAN-64 rehearsal)."""
+    i, unknown = next(
+        (i, p)
+        for i, p in enumerate(products)
+        if p.ingredients_text is None and not p.allergens_tags
+    )
+    assert filled_store.search(vectors[i], limit=1)[0].code == unknown.code
+    hits = filled_store.search(
+        vectors[i], limit=10, filters=SearchFilters(exclude_allergens=["mustard"])
+    )
+    assert unknown.code not in {h.code for h in hits}
+    assert hits, "products with known ingredients still come back"

@@ -105,3 +105,14 @@ def captured(monkeypatch, qdrant_store):
     monkeypatch.setattr(worker, "get_qdrant_store", lambda: qdrant_store)
     store.qdrant = qdrant_store
     return store
+
+
+def pytest_collection_modifyitems(items):
+    """Mark everything that needs the real Postgres as `integration`: direct users of pg_schema,
+    and store-parametrized tests running with store=pgvector. `-m "not integration"` is then the
+    offline suite: no network, no docker, no LLM key."""
+    for item in items:
+        callspec = getattr(item, "callspec", None)
+        dynamic_pg = callspec is not None and "pgvector" in callspec.params.values()
+        if "pg_schema" in item.fixturenames or dynamic_pg:
+            item.add_marker(pytest.mark.integration)

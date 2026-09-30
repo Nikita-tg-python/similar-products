@@ -2,6 +2,7 @@
 
 import logging
 
+import psycopg
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -39,6 +40,14 @@ def register_error_handlers(app: FastAPI) -> None:
     async def http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
         code = "not_found" if exc.status_code == 404 else "http_error"
         return JSONResponse(status_code=exc.status_code, content=_body(code, str(exc.detail)))
+
+    @app.exception_handler(psycopg.OperationalError)
+    async def database_down(_request: Request, exc: psycopg.OperationalError) -> JSONResponse:
+        logger.warning("database unavailable: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=_body("database_unavailable", "database unavailable, retry shortly"),
+        )
 
     @app.exception_handler(Exception)
     async def unexpected(_request: Request, exc: Exception) -> JSONResponse:

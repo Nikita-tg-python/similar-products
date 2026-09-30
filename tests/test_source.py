@@ -118,3 +118,9 @@ def test_fixture_covers_every_interesting_case():
     assert all(products), "the fixture holds only rows that normalize accepts"
     missing = [name for name, case in CASES.items() if not any(case(p) for p in products)]
     assert not missing
+
+
+@pytest.mark.parametrize("placeholder", ["undefined", "Undefined ", "null"])
+def test_placeholder_ingredients_are_unknown(placeholder):
+    row = raw_row(ingredients_text=[{"lang": "main", "text": placeholder}])
+    assert normalize(row).ingredients_text is None

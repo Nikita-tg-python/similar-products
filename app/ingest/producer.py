@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from redis import Redis
+from redis.exceptions import RedisError
 from rq import Queue, Retry
 from rq.job import Job, JobStatus
 
@@ -72,17 +73,33 @@ def job_summary(redis: Redis, job_ids: list[str]) -> tuple[Counter, Counter]:
     return statuses, totals
 
 
+# Progress polling tolerates Redis hiccups (seen in the KAN-64 rehearsal on a loaded machine: one
+# socket timeout killed `make ingest` while the workers carried on). Give up after ~1 minute.
+MAX_POLL_FAILURES = 30
+
+
 def wait_for(redis: Redis, queue: Queue, job_ids: list[str], poll_s: float = 2.0) -> Counter:
     terminal = {JobStatus.FINISHED.value, JobStatus.FAILED.value, "expired"}
+    failures = 0
     while True:
-        statuses, totals = job_summary(redis, job_ids)
+        try:
+            statuses, totals = job_summary(redis, job_ids)
+            in_queue = queue.count
+        except RedisError as exc:
+            failures += 1
+            if failures >= MAX_POLL_FAILURES:
+                raise
+            logger.warning("redis did not answer (%s), polling again", type(exc).__name__)
+            time.sleep(poll_s)
+            continue
+        failures = 0
         done = sum(statuses[s] for s in terminal)
         logger.info(
             "jobs %d/%d done (failed %d), in queue %d | rows upserted %d, skipped %d, invalid %d",
             done,
             len(job_ids),
             statuses[JobStatus.FAILED.value],
-            queue.count,
+            in_queue,
             totals["upserted"],
             totals["skipped"],
             totals["invalid"],
@@ -109,7 +126,7 @@ def main() -> None:
     if get_qdrant_store().ensure_collection():
         logger.info("qdrant collection %r created", settings.qdrant_collection)
 
-    redis = Redis.from_url(settings.redis_url)
+    redis = Redis.from_url(settings.redis_url, socket_timeout=30, retry_on_timeout=True)
     queue = Queue(QUEUE_NAME, connection=redis)
     started = time.monotonic()
     job_ids = enqueue_file(queue, args.source, args.batch_size)

@@ -76,13 +76,20 @@ def load_catalog(conn) -> tuple[list[str], np.ndarray, list[dict]]:
     """Every vector with the filter fields, straight from Postgres (identical to Qdrant's copy:
     scripts/check_stores.py)."""
     rows = conn.execute(
-        "SELECT code, embedding, allergens_tags, traces_tags, vegan, nutriscore_grade, sugars_100g "
+        "SELECT code, embedding, allergens_tags, traces_tags, vegan, nutriscore_grade, "
+        "sugars_100g, ingredients_text IS NOT NULL "
         "FROM products WHERE embedding IS NOT NULL ORDER BY code"
     ).fetchall()
     codes = [r[0] for r in rows]
     vectors = np.stack([r[1].to_numpy() for r in rows]).astype(np.float32)
     fields = [
-        {"allergens": set(r[2]) | set(r[3]), "vegan": r[4], "nutriscore": r[5], "sugars": r[6]}
+        {
+            "allergens": set(r[2]) | set(r[3]),
+            "vegan": r[4],
+            "nutriscore": r[5],
+            "sugars": r[6],
+            "ingredients_known": r[7],
+        }
         for r in rows
     ]
     return codes, vectors, fields
@@ -95,6 +102,7 @@ def mask_for(f: SearchFilters, fields: list[dict]) -> np.ndarray:
     return np.array(
         [
             not banned & row["allergens"]
+            and (not banned or row["ingredients_known"])
             and (not f.vegan_only or row["vegan"] == "yes")
             and (grades is None or row["nutriscore"] in grades)
             and (
@@ -192,9 +200,10 @@ def run(runs: int, seed: int) -> tuple[str, str]:
 
     env = (
         f"{len(codes)} векторів × {vectors.shape[1]}, cosine; HNSW в обох `m={HNSW.m}`, "
-        f"`ef_construct={HNSW.ef_construct}`, пошук `ef={SEARCH_EF}`; Qdrant проіндексовано "
-        f"{info.indexed_vectors_count} з {info.points_count} "
-        "(решта — малий сегмент, повний перебір); "
+        f"`ef_construct={HNSW.ef_construct}`, пошук `ef={SEARCH_EF}`; Qdrant: "
+        f"{info.points_count} точок, indexed_vectors_count={info.indexed_vectors_count} "
+        "(лічильник Qdrant: менше за точки — малий сегмент шукається перебором, більше — після "
+        "перезапису ще не прибрані старі версії); "
         f"{len(queries)} запитів × {runs} прогонів після {WARMUP} прогрівних; "
         f"{platform.machine()}, {platform.system()} (Docker), seed {seed}"
     )

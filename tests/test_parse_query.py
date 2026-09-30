@@ -12,7 +12,7 @@ from app.llm.base import LLMError
 from app.llm.fake import FakeLLM
 from app.llm.parse_query import SYSTEM_PROMPT, parse_query
 from app.main import app
-from app.schemas import LOW_SUGAR_MAX_G, ParsedQuery, SearchFilters
+from app.schemas import LOW_SUGAR_MAX_G, ParsedQuery, ProductOut, SearchFilters
 
 EXAMPLE = "веганське печиво без горіхів з низьким вмістом цукру"
 NUTS = "en:nuts"
@@ -103,6 +103,42 @@ def test_factory_gives_fakellm_for_the_fake_provider():
 # --- POST /search end to end (FakeLLM, fake embeddings, real filters in both stores) ---------
 
 
+def test_search_endpoint_fully_offline(monkeypatch, qdrant_store, products, vectors):
+    """No Postgres, no network: Qdrant in memory, product details served from the fixture."""
+    from app import db
+
+    qdrant_store.upsert(products, vectors)
+    by_code = {p.code: p for p in products}
+    monkeypatch.setattr(
+        db,
+        "fetch_products",
+        lambda _conn, codes: {
+            c: ProductOut(**by_code[c].model_dump(include=set(ProductOut.model_fields)))
+            for c in codes
+        },
+    )
+
+    def no_db():
+        yield None
+
+    app.dependency_overrides = {
+        search.get_conn: no_db,
+        search.get_qdrant: lambda: qdrant_store,
+        search.get_llm: lambda: FakeLLM(),
+    }
+    try:
+        r = TestClient(app).post("/search", json={"query": EXAMPLE, "limit": 10})
+    finally:
+        app.dependency_overrides = {}
+    assert r.status_code == 200, r.text
+    results = r.json()["results"]
+    assert results
+    for item in results:
+        assert item["vegan"] == "yes"
+        assert NUTS not in item["allergens_tags"] + item["traces_tags"]
+        assert item["sugars_100g"] is not None and item["sugars_100g"] <= LOW_SUGAR_MAX_G
+
+
 @pytest.fixture
 def client(pg_schema, pgvector_store, qdrant_store, products, vectors):
     pgvector_store.upsert(products, vectors)
@@ -140,6 +176,7 @@ def test_example_query_returns_only_vegan_nut_free_low_sugar(client, products, b
         for p in products
         if p.vegan == "yes"
         and NUTS not in p.allergens_tags + p.traces_tags
+        and p.ingredients_text is not None
         and p.sugars_100g is not None
         and p.sugars_100g <= LOW_SUGAR_MAX_G
     ]

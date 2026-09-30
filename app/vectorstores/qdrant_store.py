@@ -1,9 +1,13 @@
 """Qdrant: the collection, deterministic point ids and payload indexes for the filters."""
 
+import logging
 import uuid
+from collections.abc import Callable
 
+import grpc
 import numpy as np
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from app.embeddings import EMBEDDING_DIM
 from app.ingest.source import Product
@@ -27,6 +31,30 @@ KEYWORD_FIELDS = (
 )
 
 
+logger = logging.getLogger(__name__)
+
+# Reads are idempotent: a short deadline and one retry on a dead or stuck connection bound a
+# search at ~2 x 5 s instead of hanging for the client's 30 s default and failing.
+READ_TIMEOUT_S = 5
+_TRANSIENT_GRPC = {grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.UNAVAILABLE}
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, grpc.RpcError):
+        return exc.code() in _TRANSIENT_GRPC
+    return isinstance(exc, ResponseHandlingException)  # REST transport: timeouts, resets
+
+
+def read_with_retry[T](call: Callable[[], T]) -> T:
+    try:
+        return call()
+    except Exception as exc:
+        if not _is_transient(exc):
+            raise
+        logger.warning("qdrant read failed (%s), retrying once", exc.__class__.__name__)
+        return call()
+
+
 def point_id(code: str) -> str:
     return str(uuid.uuid5(_ID_NAMESPACE, code))
 
@@ -39,14 +67,17 @@ class QdrantStore:
         self.collection = collection
 
     def ensure_collection(self) -> bool:
-        """Create the collection and its payload indexes if missing; True if it was created."""
-        if self.client.collection_exists(self.collection):
-            return False
-        self.client.create_collection(
-            self.collection,
-            vectors_config=models.VectorParams(size=EMBEDDING_DIM, distance=models.Distance.COSINE),
-            hnsw_config=HNSW,
-        )
+        """Create the collection if missing (True if it was created) and make sure every payload
+        index exists: creating an existing index is a no-op, so new ones reach old collections."""
+        created = not self.client.collection_exists(self.collection)
+        if created:
+            self.client.create_collection(
+                self.collection,
+                vectors_config=models.VectorParams(
+                    size=EMBEDDING_DIM, distance=models.Distance.COSINE
+                ),
+                hnsw_config=HNSW,
+            )
         for field in KEYWORD_FIELDS:
             self.client.create_payload_index(
                 self.collection, field, models.PayloadSchemaType.KEYWORD
@@ -54,7 +85,10 @@ class QdrantStore:
         self.client.create_payload_index(
             self.collection, "sugars_100g", models.PayloadSchemaType.FLOAT
         )
-        return True
+        self.client.create_payload_index(
+            self.collection, "ingredients_known", models.PayloadSchemaType.BOOL
+        )
+        return created
 
     def upsert(self, products: list[Product], vectors: np.ndarray) -> None:
         points = [
@@ -68,7 +102,11 @@ class QdrantStore:
         return self.client.count(self.collection, exact=True).count
 
     def get_vector(self, code: str) -> np.ndarray | None:
-        points = self.client.retrieve(self.collection, [point_id(code)], with_vectors=True)
+        points = read_with_retry(
+            lambda: self.client.retrieve(
+                self.collection, [point_id(code)], with_vectors=True, timeout=READ_TIMEOUT_S
+            )
+        )
         return np.asarray(points[0].vector, dtype=np.float32) if points else None
 
     def search(
@@ -78,13 +116,16 @@ class QdrantStore:
         exclude_code: str | None = None,
         filters: SearchFilters | None = None,
     ) -> list[Hit]:
-        response = self.client.query_points(
-            self.collection,
-            query=vector.tolist(),
-            query_filter=qdrant_filter(filters or SearchFilters(), exclude_code),
-            search_params=models.SearchParams(hnsw_ef=SEARCH_EF),
-            limit=limit,
-            with_payload=["code"],
+        response = read_with_retry(
+            lambda: self.client.query_points(
+                self.collection,
+                query=vector.tolist(),
+                query_filter=qdrant_filter(filters or SearchFilters(), exclude_code),
+                search_params=models.SearchParams(hnsw_ef=SEARCH_EF),
+                limit=limit,
+                with_payload=["code"],
+                timeout=READ_TIMEOUT_S,
+            )
         )
         return [Hit(code=p.payload["code"], score=p.score) for p in response.points]
 
@@ -103,6 +144,10 @@ def qdrant_filter(filters: SearchFilters, exclude_code: str | None) -> models.Fi
             models.FieldCondition(key="allergens_tags", match=banned),
             models.FieldCondition(key="traces_tags", match=banned),
         ]
+        # no tags + no ingredients means "unknown", not "free of": it does not pass
+        must.append(
+            models.FieldCondition(key="ingredients_known", match=models.MatchValue(value=True))
+        )
     if filters.vegan_only:
         must.append(models.FieldCondition(key="vegan", match=models.MatchValue(value="yes")))
     if (grades := filters.nutriscore_grades) is not None:
